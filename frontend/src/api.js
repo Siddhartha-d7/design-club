@@ -1,4 +1,4 @@
-const API_URL = 'http://localhost:5000/api';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
 /**
  * Helper to get authorization headers.
@@ -197,6 +197,7 @@ export const api = {
   // Helper to format image paths
   getImageUrl(path) {
     if (!path) return '';
-    return `http://localhost:5000${path}`;
+    const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+    return `${baseUrl}${path}`;
   }
 };
