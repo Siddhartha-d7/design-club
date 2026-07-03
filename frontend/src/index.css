@@ -1,6 +1,9 @@
+@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&display=swap');
+
 @import "tailwindcss";
 
 @theme {
+  --font-sans: "Kepler Std", "Kepler", "Lora", Georgia, serif;
   --color-brand-black: #ffffff;
   --color-brand-white: #000000;
   --color-brand-dark: #fcfcfd;
@@ -18,7 +21,6 @@
   --color-brand-gray-900: #f4f4f5;
   --color-brand-gray-950: #fafafa;
 
-  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 
   --shadow-neo: 4px 4px 0px 0px #000000;
   --shadow-neo-white: 4px 4px 0px 0px #000000;
