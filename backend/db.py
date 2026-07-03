@@ -305,8 +305,8 @@ def init_db():
         users_col.insert_one(lead_user)
         print("Seeded Default Team Lead: lead@designclub.com / leadpassword")
 
-    # Seed 31 Days of Daily Tech News Topics
-    if topics_col.count_documents({}) == 0:
+    # Seed 31 Days of Daily Tech News Topics (Disabled)
+    if False:
         topics_data = [
             {"day": 1, "date": "2026-06-15", "title": "Apple WWDC 2026", "desc": "Design a concept showing off Apple's new AI features or Siri overhaul."},
             {"day": 2, "date": "2026-06-16", "title": "Figma's New Interface", "desc": "Create a graphic or meme showcasing Figma's dark mode or UI changes."},

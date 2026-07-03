@@ -85,10 +85,15 @@ export default function App() {
   const [uploadTopic, setUploadTopic] = useState('');
   const [viewingSubmission, setViewingSubmission] = useState(null);
   const [celebAwardUpload, setCelebAwardUpload] = useState(null);
+  const [celebInstaUpload, setCelebInstaUpload] = useState(null);
   
-  const [coordinatorTab, setCoordinatorTab] = useState('submissions'); // 'submissions' | 'polls' | 'insights'
+  const [coordinatorTab, setCoordinatorTab] = useState('submissions'); // 'submissions' | 'polls' | 'insights' | 'daily-tasks'
   const [adminStats, setAdminStats] = useState(null);
   const [statsTimeframe, setStatsTimeframe] = useState('30days');
+  const [showTaskPopup, setShowTaskPopup] = useState(false);
+  const [activeTodayTopic, setActiveTodayTopic] = useState(null);
+  const [popupType, setPopupType] = useState('new'); // 'new' | 'updated'
+  const [previousTask, setPreviousTask] = useState(null);
   const [emailLoading, setEmailLoading] = useState(false);
   const [emailStatus, setEmailStatus] = useState('');
   const [instaPicks, setInstaPicks] = useState([]);
@@ -113,6 +118,23 @@ export default function App() {
       }
     }
     setCelebAwardUpload(null);
+  };
+
+  const handleCloseInstaModal = () => {
+    if (celebInstaUpload) {
+      const ackStr = localStorage.getItem('acknowledged_insta_picks') || '[]';
+      let acknowledged = [];
+      try {
+        acknowledged = JSON.parse(ackStr);
+      } catch (e) {
+        acknowledged = [];
+      }
+      if (!acknowledged.includes(celebInstaUpload._id)) {
+        acknowledged.push(celebInstaUpload._id);
+        localStorage.setItem('acknowledged_insta_picks', JSON.stringify(acknowledged));
+      }
+    }
+    setCelebInstaUpload(null);
   };
   
   
@@ -142,6 +164,16 @@ export default function App() {
       dayIndex++;
     }
     return days;
+  };
+
+  const getCurrentDayNumber = (cycleId) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const start = new Date(cycleId);
+    start.setHours(0, 0, 0, 0);
+    const diffTime = today - start;
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24)) + 1; // 1-indexed
+    return Math.max(1, Math.min(diffDays, 31));
   };
 
   const cycleDays = generateCycleDays(selectedCycle);
@@ -187,6 +219,7 @@ export default function App() {
   const [editingTopic, setEditingTopic] = useState(null);
   const [editedTopicTitle, setEditedTopicTitle] = useState('');
   const [editedTopicDesc, setEditedTopicDesc] = useState('');
+  const [editedTopicDate, setEditedTopicDate] = useState('');
 
   // Auto Logout decorator check
   const checkResponseError = (res) => {
@@ -237,6 +270,84 @@ export default function App() {
     }
   }, [studentUploads, user]);
 
+  useEffect(() => {
+    if (user && user.role === 'student' && studentUploads && studentUploads.length > 0) {
+      const ackStr = localStorage.getItem('acknowledged_insta_picks') || '[]';
+      let acknowledged = [];
+      try {
+        acknowledged = JSON.parse(ackStr);
+      } catch (e) {
+        acknowledged = [];
+      }
+      
+      const picked = studentUploads.find(u => 
+        u.is_insta_pick &&
+        !acknowledged.includes(u._id)
+      );
+      if (picked) {
+        setCelebInstaUpload(picked);
+      }
+    }
+  }, [studentUploads, user]);
+
+  useEffect(() => {
+    if (user && user.role === 'student' && topics && topics.length > 0) {
+      const currentDayNum = getCurrentDayNumber(selectedCycle);
+      const todayTopic = topics.find(t => t.day === currentDayNum && t.announced);
+      
+      if (todayTopic) {
+        setActiveTodayTopic(todayTopic);
+        const ackKey = `acknowledged_task_${todayTopic._id}`;
+        const lastAckStr = localStorage.getItem(ackKey);
+        
+        let shouldShow = false;
+        let pType = 'new';
+        let prevT = null;
+        
+        if (!lastAckStr) {
+          shouldShow = true;
+          if (todayTopic.is_updated) {
+            pType = 'updated';
+            prevT = { title: todayTopic.prev_title, desc: todayTopic.prev_desc };
+          } else {
+            pType = 'new';
+          }
+        } else {
+          try {
+            const lastAck = JSON.parse(lastAckStr);
+            if (lastAck.announced_at !== todayTopic.announced_at) {
+              shouldShow = true;
+              pType = 'updated';
+              prevT = { 
+                title: todayTopic.prev_title || lastAck.title, 
+                desc: todayTopic.prev_desc || lastAck.desc 
+              };
+            }
+          } catch (e) {
+            if (lastAckStr !== todayTopic.announced_at) {
+              shouldShow = true;
+              if (todayTopic.is_updated) {
+                pType = 'updated';
+                prevT = { title: todayTopic.prev_title, desc: todayTopic.prev_desc };
+              } else {
+                pType = 'new';
+              }
+            }
+          }
+        }
+        
+        if (shouldShow) {
+          setPopupType(pType);
+          setPreviousTask(prevT);
+          setShowTaskPopup(true);
+        }
+      } else {
+        setActiveTodayTopic(null);
+        setShowTaskPopup(false);
+      }
+    }
+  }, [topics, selectedCycle, user?.role]);
+
   const loadDashboardData = async (cycle = selectedCycle) => {
     setLoading(true);
     setErrorMsg('');
@@ -244,6 +355,11 @@ export default function App() {
       const lbRes = await api.getLeaderboard(cycle);
       if (!checkResponseError(lbRes)) {
         setLeaderboard(lbRes);
+      }
+      
+      const topicsRes = await api.getTopics(cycle);
+      if (topicsRes && !topicsRes.error) {
+        setTopics(topicsRes);
       }
 
       if (user.role === 'student') {
@@ -596,19 +712,22 @@ export default function App() {
     setSuccessMsg('');
     setLoading(true);
     try {
-      const res = await api.updateTopic(editingTopic.day, {
+      const res = await api.addTopic({
+        cycle_id: selectedCycle,
+        date: editedTopicDate,
+        day: editingTopic.day,
         title: editedTopicTitle,
         desc: editedTopicDesc
       });
       if (res.error) {
         setErrorMsg(res.error);
       } else {
-        setSuccessMsg(`Topic for Day ${editingTopic.day} updated!`);
+        setSuccessMsg(`Task for Day ${editingTopic.day} (${editedTopicDate}) saved and announced!`);
         setEditingTopic(null);
         loadDashboardData();
       }
     } catch (err) {
-      setErrorMsg("Failed to update topic.");
+      setErrorMsg("Failed to save task.");
     } finally {
       setLoading(false);
     }
@@ -1149,7 +1268,7 @@ export default function App() {
                 <span className="text-[9px] font-bold font-mono tracking-widest bg-zinc-100 text-black px-2 py-0.5 rounded uppercase">
                   Active Cycle: {CYCLES.find(c => c.id === selectedCycle)?.name || selectedCycle}
                 </span>
-                <h2 className="text-xl font-extrabold tracking-tight text-zinc-900 mt-2 uppercase font-sans">Monthly design planner</h2>
+                <h2 className="text-xl font-extrabold tracking-tight text-zinc-900 mt-2 uppercase font-sans">student dashboard</h2>
                 <p className="text-xs text-zinc-500 font-light mt-0.5">Participate daily to earn leaderboard points and win showcase trophies.</p>
               </div>
               <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-end">
@@ -1240,6 +1359,73 @@ export default function App() {
               </div>
 
             </div>
+
+            {/* Today's Announced Task Panel */}
+            {activeTodayTopic && (
+              <div className="premium-card p-6 bg-gradient-to-tr from-yellow-50/20 via-red-50/15 to-purple-50/25 border border-pink-200 shadow-sm">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                  <div className="flex items-start">
+                    <div className="p-3.5 bg-gradient-to-tr from-yellow-500 via-pink-500 to-purple-600 text-white rounded-2xl shadow-md mr-4 shrink-0 flex items-center justify-center select-none animate-pulse">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+                        <rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect>
+                        <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path>
+                        <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line>
+                      </svg>
+                    </div>
+                    <div className="space-y-1 min-w-0">
+                      <span className="text-[9px] font-bold font-mono tracking-widest bg-gradient-to-r from-pink-500 to-purple-600 text-white px-2 py-0.5 rounded uppercase">
+                        Today's Task • Day {getCurrentDayNumber(selectedCycle)}
+                      </span>
+                      <h3 className="text-base font-bold text-black font-mono uppercase mt-2">{activeTodayTopic.title}</h3>
+                      <p className="text-xs text-zinc-650 font-mono leading-relaxed mt-1 max-w-2xl">{activeTodayTopic.desc}</p>
+                    </div>
+                  </div>
+                  
+                  <div className="shrink-0 font-mono">
+                    {(() => {
+                      const currentDayNum = getCurrentDayNumber(selectedCycle);
+                      const state = submissionTracker[currentDayNum];
+                      const isSubmitted = state === 'task' || state === 'meme' || state === 'both';
+                      const dayUpload = studentUploads.find(u => u.day_number === currentDayNum);
+
+                      if (isSubmitted) {
+                        return (
+                          <div className="flex flex-col items-end gap-2">
+                            <span className="bg-green-150 border border-green-300 text-green-800 text-[10px] font-bold rounded-lg px-3 py-1.5 uppercase tracking-wide">
+                              ✅ Completed
+                            </span>
+                            {dayUpload && (
+                              <button
+                                onClick={() => setViewingSubmission(dayUpload)}
+                                className="text-[9px] text-indigo-600 hover:text-indigo-850 underline font-bold cursor-pointer transition-colors"
+                              >
+                                View My Submission
+                              </button>
+                            )}
+                          </div>
+                        );
+                      } else {
+                        return (
+                          <button
+                            onClick={() => {
+                              setSelectedDayNumber(currentDayNum);
+                              setUploadTopic(activeTodayTopic.title);
+                              setUploadType('task');
+                              setUploadTool('');
+                              setUploadTime(30);
+                              setUploadModalOpen(true);
+                            }}
+                            className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-750 text-white rounded-xl text-xs uppercase tracking-wider font-bold transition-all shadow-md active:scale-98 cursor-pointer flex items-center gap-1.5"
+                          >
+                            <span>🚀</span> Submit Today's Task
+                          </button>
+                        );
+                      }
+                    })()}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* SVG Progress Graph + Points cheat-sheet split */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -1611,10 +1797,87 @@ export default function App() {
               >
                 📊 Insights & Graphs
               </button>
+              <button
+                type="button"
+                onClick={() => setCoordinatorTab('daily-tasks')}
+                className={`py-3 px-6 font-mono text-xs uppercase tracking-wider font-bold border-b-2 transition-all cursor-pointer ${
+                  coordinatorTab === 'daily-tasks'
+                    ? 'border-black text-black'
+                    : 'border-transparent text-zinc-400 hover:text-zinc-650'
+                }`}
+              >
+                📅 Daily Tasks Plan
+              </button>
             </div>
 
             {coordinatorTab === 'submissions' && (
               <>
+                {/* Daily Task Completion Tracker */}
+                <div className="premium-card p-6 mb-8">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-zinc-200">
+                    <div>
+                      <h3 className="text-sm font-bold font-mono uppercase tracking-wider text-black flex items-center gap-2">
+                        <span>📋</span> Today's Task Completion Tracker (Day {getCurrentDayNumber(selectedCycle)})
+                      </h3>
+                      {(() => {
+                        const currentDayNum = getCurrentDayNumber(selectedCycle);
+                        const todayTopic = topics.find(t => t.day === currentDayNum);
+                        if (todayTopic && todayTopic.announced) {
+                          return (
+                            <p className="text-xs text-indigo-650 font-bold mt-1 font-mono">
+                              Active Task: "{todayTopic.title}"
+                            </p>
+                          );
+                        } else {
+                          return (
+                            <p className="text-xs text-zinc-400 font-light mt-0.5">
+                              No task has been announced for today yet. Use the "Daily Tasks Plan" tab to announce it.
+                            </p>
+                          );
+                        }
+                      })()}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 max-h-[220px] overflow-y-auto pr-1">
+                    {adminStudents.map((student) => {
+                      const currentDayNum = getCurrentDayNumber(selectedCycle);
+                      const dayUpload = adminUploads.find(u => 
+                        String(u.student_id) === String(student.id) &&
+                        u.day_number === currentDayNum
+                      );
+                      
+                      return (
+                        <div key={student.id} className="bg-zinc-50 border border-zinc-200 p-3 rounded-xl flex items-center justify-between gap-3 font-mono text-[10px] select-none hover:bg-zinc-100/50 transition-colors">
+                          <div className="min-w-0">
+                            <span className="block text-black font-bold truncate uppercase">{student.name}</span>
+                            <span className="block text-zinc-400 truncate text-[9px] uppercase mt-0.5">{student.college_name}</span>
+                          </div>
+                          <div className="shrink-0">
+                            {dayUpload ? (
+                              <button
+                                onClick={() => handleOpenReview(dayUpload)}
+                                className="bg-green-100 hover:bg-green-200 border border-green-300 text-green-800 text-[8px] font-bold rounded-lg px-2 py-1 uppercase tracking-wide cursor-pointer transition-colors"
+                              >
+                                ✅ Submitted
+                              </button>
+                            ) : (
+                              <span className="bg-red-50 border border-red-200 text-red-700 text-[8px] font-bold rounded-lg px-2 py-1 uppercase tracking-wide block">
+                                ❌ Pending
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {adminStudents.length === 0 && (
+                      <div className="col-span-full text-center py-6 text-zinc-450 font-mono text-xs">
+                        No registered students found in this cycle.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 {/* Split panels */}
                 <div className="premium-card p-6">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-zinc-200">
@@ -1623,15 +1886,15 @@ export default function App() {
                       <p className="text-xs text-zinc-400 font-light mt-0.5">Ranked student index list</p>
                     </div>
                     <div className="relative">
-                  <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-zinc-400" />
-                  <input 
-                    type="text"
-                    value={leaderboardSearch}
-                    onChange={(e) => setLeaderboardSearch(e.target.value)}
-                    placeholder="Search name or college..."
-                    className="bg-zinc-50 border border-zinc-200 pl-9 pr-4 py-1.5 text-xs text-black focus:outline-none focus:border-black font-mono rounded-lg w-52"
-                  />
-                </div>
+                      <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                      <input 
+                        type="text"
+                        value={leaderboardSearch}
+                        onChange={(e) => setLeaderboardSearch(e.target.value)}
+                        placeholder="Search name or college..."
+                        className="bg-zinc-50 border border-zinc-200 pl-9 pr-4 py-1.5 text-xs text-black focus:outline-none focus:border-black font-mono rounded-lg w-52"
+                      />
+                    </div>
               </div>
 
               <div className="overflow-x-auto">
@@ -1716,7 +1979,7 @@ export default function App() {
                 {/* Filters selector */}
                 <div className="flex flex-wrap items-center gap-3 font-mono text-xs">
                   <div className="relative">
-                    <Search className="w-3 top-2.5 left-2.5 absolute text-zinc-400" />
+                    <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
                     <input 
                       type="text"
                       placeholder="Filter student..."
@@ -2480,6 +2743,106 @@ export default function App() {
           </div>
         )}
 
+        {coordinatorTab === 'daily-tasks' && (
+          <div className="space-y-8 animate-fade-in">
+            {/* Header banner */}
+            <div className="premium-card p-6">
+              <h3 className="text-sm font-bold font-mono uppercase tracking-wider text-black">Daily Design Tasks Plan</h3>
+              <p className="text-xs text-zinc-400 font-light mt-0.5">Manage daily design topics and tasks. Announced tasks are immediately highlighted for registered students.</p>
+            </div>
+
+            {/* List of days */}
+            <div className="premium-card p-6">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left font-mono text-xs select-none">
+                  <thead>
+                    <tr className="border-b border-zinc-150 text-zinc-400 uppercase text-[9px] tracking-wider">
+                      <th className="py-2.5 px-2 text-center w-24 font-bold">Date / Day</th>
+                      <th className="py-2.5 px-4 font-bold">Task Title</th>
+                      <th className="py-2.5 px-4 font-bold">Task Description</th>
+                      <th className="py-2.5 px-4 text-center w-28 font-bold">Status</th>
+                      <th className="py-2.5 px-2 text-center w-32 font-bold">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-100">
+                    {cycleDays.map((dayObj) => {
+                      const topic = topics.find(t => t.day === dayObj.day);
+                      const currentDayNum = getCurrentDayNumber(selectedCycle);
+                      const isToday = dayObj.day === currentDayNum;
+                      
+                      return (
+                        <tr key={dayObj.day} className={`hover:bg-zinc-50/50 transition-colors ${isToday ? 'bg-indigo-50/20 font-bold' : ''}`}>
+                          <td className="py-3 px-2 text-center font-bold">
+                            <span className="block text-black text-[11px] font-bold uppercase">{(() => {
+                              if (!dayObj.date) return '';
+                              const d = new Date(dayObj.date + 'T12:00:00');
+                              return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+                            })()}</span>
+                            <span className="block text-[9px] text-zinc-400 font-normal mt-0.5">Day {dayObj.day}</span>
+                            {isToday && <span className="inline-block text-[8px] bg-indigo-650 text-white rounded-md px-1.5 py-0.5 uppercase mt-1 tracking-wider">Today</span>}
+                          </td>
+                          <td className="py-3 px-4 font-bold">
+                            {topic ? (
+                              <span className="text-black">{topic.title}</span>
+                            ) : (
+                              <span className="text-zinc-400 font-light italic">No task announced</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-4 max-w-xs truncate" title={topic ? topic.desc : ''}>
+                            {topic ? (
+                              <span className="text-zinc-550">{topic.desc}</span>
+                            ) : (
+                              <span className="text-zinc-350 font-light italic">Click Add Task to set challenge work</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            {topic && topic.announced ? (
+                              <span className="bg-green-100 border border-green-300 text-green-800 text-[9px] font-bold rounded-lg px-2.5 py-0.5 uppercase tracking-wide">
+                                📢 Announced
+                              </span>
+                            ) : (
+                              <span className="bg-zinc-100 border border-zinc-200 text-zinc-400 text-[9px] font-bold rounded-lg px-2.5 py-0.5 uppercase tracking-wide">
+                                Pending
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-2 text-center">
+                            {topic ? (
+                              <button
+                                onClick={() => {
+                                  setEditingTopic(dayObj);
+                                  setEditedTopicTitle(topic.title);
+                                  setEditedTopicDesc(topic.desc);
+                                  setEditedTopicDate(topic.date || dayObj.date);
+                                }}
+                                className="px-3 py-1.5 bg-black hover:bg-zinc-800 text-white rounded-lg text-[9px] uppercase tracking-wider font-bold transition-all cursor-pointer shadow-xs"
+                              >
+                                Edit Task
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => {
+                                  setEditingTopic(dayObj);
+                                  setEditedTopicTitle('');
+                                  setEditedTopicDesc('');
+                                  setEditedTopicDate(dayObj.date);
+                                }}
+                                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[9px] uppercase tracking-wider font-bold transition-all cursor-pointer shadow-xs"
+                              >
+                                ➕ Add Task
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
           </div>
         )}
 
@@ -2995,14 +3358,88 @@ export default function App() {
         </div>
       )}
 
+      {/* 5. NEW DAILY TASK ANNOUNCEMENT POPUP */}
+      {showTaskPopup && activeTodayTopic && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md animate-fade-in">
+          <div className="bg-white border border-zinc-200 p-8 rounded-2xl w-full max-w-md shadow-2xl text-center relative overflow-hidden flex flex-col items-center">
+            
+            {/* Ambient background glow */}
+            <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-purple-500 via-indigo-650 to-pink-500" />
+            
+            <div className="p-4 bg-indigo-50 text-indigo-650 rounded-full mt-2 animate-bounce">
+              <Sparkles className="w-8 h-8" />
+            </div>
+            
+            <h2 className="text-lg font-black tracking-tight text-indigo-950 uppercase mt-5 font-mono">
+              {popupType === 'new' ? '📢 New Daily Task Added!' : '🔄 Daily Task Updated by Admin!'}
+            </h2>
+            <p className="text-[10px] text-zinc-400 font-mono tracking-wider uppercase mt-1">
+              {activeTodayTopic.date ? new Date(activeTodayTopic.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric' }) : ''} • Day {activeTodayTopic.day}
+            </p>
+            
+            {popupType === 'new' ? (
+              <div className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-5 my-6">
+                <h4 className="text-xs font-bold text-black font-mono uppercase">{activeTodayTopic.title}</h4>
+                <p className="text-[11px] text-zinc-550 mt-2 font-mono leading-relaxed text-left whitespace-pre-line bg-white p-3 rounded-lg border border-zinc-100 max-h-[140px] overflow-y-auto">
+                  {activeTodayTopic.desc}
+                </p>
+              </div>
+            ) : (
+              <div className="w-full my-5 space-y-4">
+                <p className="text-[10px] text-red-600 bg-red-50 border border-red-200 px-3 py-2 rounded-lg font-mono leading-relaxed">
+                  ⚠️ This is your previous task, now it has been updated by the admin:
+                </p>
+                
+                {/* Previous Task details */}
+                {previousTask && (
+                  <div className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-left">
+                    <span className="block text-[8px] font-bold font-mono text-zinc-400 uppercase tracking-widest mb-1">Previous Task</span>
+                    <h5 className="text-[10px] font-bold text-zinc-500 font-mono uppercase line-through">{previousTask.title}</h5>
+                    <p className="text-[10px] text-zinc-400 mt-1 font-mono max-h-[60px] overflow-y-auto line-through leading-tight">
+                      {previousTask.desc}
+                    </p>
+                  </div>
+                )}
+                
+                {/* Updated Task details */}
+                <div className="w-full bg-indigo-50/55 border border-indigo-150 rounded-xl p-3.5 text-left animate-pulse">
+                  <span className="block text-[8px] font-bold font-mono text-indigo-500 uppercase tracking-widest mb-1">Updated Task</span>
+                  <h5 className="text-[10px] font-bold text-indigo-950 font-mono uppercase">{activeTodayTopic.title}</h5>
+                  <p className="text-[10px] text-zinc-700 mt-1 font-mono max-h-[85px] overflow-y-auto leading-relaxed">
+                    {activeTodayTopic.desc}
+                  </p>
+                </div>
+              </div>
+            )}
+            
+            <button
+              onClick={() => {
+                const ackObj = {
+                  title: activeTodayTopic.title,
+                  desc: activeTodayTopic.desc,
+                  announced_at: activeTodayTopic.announced_at
+                };
+                localStorage.setItem(`acknowledged_task_${activeTodayTopic._id}`, JSON.stringify(ackObj));
+                setShowTaskPopup(false);
+              }}
+              className="w-full py-3 bg-black hover:bg-zinc-800 text-white rounded-xl text-xs uppercase tracking-wider font-mono font-bold transition-all shadow-md active:scale-98 cursor-pointer"
+            >
+              {popupType === 'new' ? 'Start Designing Task! [x]' : 'Accept Updates & Close [x]'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 4. DAILY TOPIC EDITOR MODAL */}
       {editingTopic && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
           <div className="bg-white border border-zinc-200 p-6 rounded-2xl w-full max-w-md shadow-2xl">
             <div className="flex justify-between items-start border-b border-zinc-200 pb-3 mb-4">
               <div>
-                <h3 className="text-sm font-bold font-mono text-black uppercase tracking-wider">Edit Day {editingTopic.day} Topic</h3>
-                <p className="text-[10px] text-zinc-450 font-mono mt-0.5">Date: {editingTopic.date}</p>
+                <h3 className="text-sm font-bold font-mono text-black uppercase tracking-wider">
+                  {topics.find(t => t.day === editingTopic.day) ? "Edit Daily Task" : "Add New Task"} (Day {editingTopic.day})
+                </h3>
+                <p className="text-[10px] text-zinc-450 font-mono mt-0.5">Configure daily work schedule</p>
               </div>
               <button 
                 onClick={() => setEditingTopic(null)}
@@ -3014,23 +3451,36 @@ export default function App() {
 
             <form onSubmit={handleSaveTopic} className="space-y-4 font-mono text-xs">
               <div>
-                <label className="block text-[10px] text-zinc-450 font-bold uppercase tracking-wider mb-1.5">Topic Title</label>
+                <label className="block text-[10px] text-zinc-450 font-bold uppercase tracking-wider mb-1.5">Task Date</label>
                 <input 
-                  type="text" 
-                  value={editedTopicTitle} 
-                  onChange={(e) => setEditedTopicTitle(e.target.value)}
-                  className="w-full premium-input font-sans font-bold"
+                  type="date" 
+                  value={editedTopicDate} 
+                  onChange={(e) => setEditedTopicDate(e.target.value)}
+                  className="w-full premium-input font-sans font-bold text-xs"
                   required
                 />
               </div>
 
               <div>
-                <label className="block text-[10px] text-zinc-450 font-bold uppercase tracking-wider mb-1.5">Challenge Description</label>
+                <label className="block text-[10px] text-zinc-450 font-bold uppercase tracking-wider mb-1.5">Task Title</label>
+                <input 
+                  type="text" 
+                  value={editedTopicTitle} 
+                  onChange={(e) => setEditedTopicTitle(e.target.value)}
+                  placeholder="e.g. Apple Siri Redesign Challenge"
+                  className="w-full premium-input font-sans font-bold text-xs"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] text-zinc-450 font-bold uppercase tracking-wider mb-1.5">Task Description / Comment</label>
                 <textarea 
                   value={editedTopicDesc} 
                   onChange={(e) => setEditedTopicDesc(e.target.value)}
+                  placeholder="Enter details or comments about what students need to do..."
                   rows="4"
-                  className="w-full premium-input font-sans"
+                  className="w-full premium-input font-sans text-xs"
                   required
                 />
               </div>
@@ -3040,7 +3490,7 @@ export default function App() {
                 disabled={loading}
                 className="w-full premium-btn-black py-2.5 text-xs uppercase"
               >
-                {loading ? "Saving changes..." : "Save Topic Updates"}
+                {loading ? "Announcing Task..." : "Submit Task & Announce"}
               </button>
             </form>
           </div>
@@ -3270,6 +3720,68 @@ export default function App() {
                 className="w-full premium-btn-outline py-2.5 text-xs font-mono uppercase text-zinc-550 hover:text-black cursor-pointer"
               >
                 Acknowledge & Close
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+      {/* 7.5. INSTAGRAM PICK CELEBRATION MODAL */}
+      {celebInstaUpload && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white border border-zinc-200 p-8 rounded-3xl w-full max-w-lg shadow-2xl relative overflow-hidden flex flex-col items-center text-center">
+            
+            {/* Instagram classic warm gradient bar */}
+            <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-yellow-500 via-red-500 to-purple-600"></div>
+            
+            {/* Close button */}
+            <button 
+              onClick={handleCloseInstaModal}
+              className="absolute top-4 right-4 text-zinc-400 hover:text-black font-mono text-sm px-2 cursor-pointer transition-colors"
+            >
+              CLOSE [x]
+            </button>
+
+            {/* Celebration Instagram Icons & Headers */}
+            <div className="my-6 select-none relative animate-pulse">
+              <div className="text-6xl filter drop-shadow">📸</div>
+              <div className="absolute -top-1 -right-2 text-2xl animate-ping opacity-60">✨</div>
+              <div className="absolute -bottom-1 -left-2 text-2xl animate-ping opacity-60">🎉</div>
+            </div>
+
+            <h2 className="text-xl font-bold uppercase tracking-wider font-mono text-black">Instagram Pick!</h2>
+            
+            <p className="text-xs text-zinc-650 font-bold font-mono mt-3 mb-6 bg-gradient-to-r from-purple-50/50 to-pink-50/30 border border-pink-250 text-pink-900 px-4 py-3 rounded-2xl">
+              📸 Your Day {celebInstaUpload.day_number} {celebInstaUpload.insta_pick_type === 'meme' ? 'Meme graphic' : 'Design task'} has been picked for Instagram! 📸
+            </p>
+
+            {/* Poster Preview */}
+            <div className="border border-zinc-200 bg-zinc-50 p-2 rounded-2xl w-full max-w-[280px] shadow-sm mb-6">
+              <img 
+                src={api.getImageUrl(celebInstaUpload.image_url)} 
+                alt="Picked Design" 
+                className="w-full h-36 object-contain rounded border border-zinc-200 bg-white animate-fade-in"
+              />
+              <span className="block text-[10px] font-mono text-zinc-400 mt-2 uppercase truncate">{celebInstaUpload.topic}</span>
+            </div>
+
+            {/* Action buttons */}
+            <div className="w-full space-y-3">
+              <button
+                onClick={() => {
+                  const filename = `day_${celebInstaUpload.day_number}_insta_pick.jpg`;
+                  handleDownloadImage(api.getImageUrl(celebInstaUpload.image_url), filename);
+                }}
+                className="w-full bg-black hover:bg-zinc-800 text-white text-xs font-mono font-bold py-3 rounded-xl flex items-center justify-center gap-2 cursor-pointer shadow-md hover:shadow-lg transition-all"
+              >
+                <Download className="w-4 h-4" /> Download My Image
+              </button>
+              
+              <button
+                onClick={handleCloseInstaModal}
+                className="w-full premium-btn-outline py-2.5 text-xs font-mono uppercase text-zinc-550 hover:text-black cursor-pointer font-bold"
+              >
+                Awesome! Let's Go 📸
               </button>
             </div>
 

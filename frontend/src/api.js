@@ -39,8 +39,9 @@ export const api = {
   },
 
   // Daily Topics
-  async getTopics() {
-    const response = await fetch(`${API_URL}/topics`, {
+  async getTopics(cycle = '') {
+    const url = cycle ? `${API_URL}/topics?cycle=${cycle}` : `${API_URL}/topics`;
+    const response = await fetch(url, {
       method: 'GET',
       headers: getHeaders(),
     });
@@ -50,6 +51,15 @@ export const api = {
   async updateTopic(dayNumber, topicData) {
     const response = await fetch(`${API_URL}/topics/${dayNumber}`, {
       method: 'PUT',
+      headers: getHeaders(),
+      body: JSON.stringify(topicData),
+    });
+    return response.json();
+  },
+
+  async addTopic(topicData) {
+    const response = await fetch(`${API_URL}/topics`, {
+      method: 'POST',
       headers: getHeaders(),
       body: JSON.stringify(topicData),
     });

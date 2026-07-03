@@ -340,9 +340,19 @@ def login():
 @app.route('/api/topics', methods=['GET'])
 @token_required
 def get_topics(current_user):
-    topics = list(topics_col.find({}).sort("day", 1))
+    cycle_id = request.args.get('cycle')
+    query = {}
+    if cycle_id:
+        query["cycle_id"] = cycle_id
+        
+    topics = list(topics_col.find(query).sort("day", 1))
     for t in topics:
         t['_id'] = str(t['_id'])
+        t['announced'] = t.get('announced', False)
+        t['announced_at'] = t.get('announced_at', None)
+        t['is_updated'] = t.get('is_updated', False)
+        t['prev_title'] = t.get('prev_title', None)
+        t['prev_desc'] = t.get('prev_desc', None)
     return jsonify(topics), 200
 
 @app.route('/api/topics/<day_number>', methods=['PUT'])
@@ -354,19 +364,102 @@ def update_topic(current_user, day_number):
     data = request.get_json() or {}
     title = data.get('title')
     desc = data.get('desc')
+    announced = data.get('announced', True)
+    cycle_id = data.get('cycle_id')
     
     if not title or not desc:
         return jsonify({'error': 'Title and description are required!'}), 400
         
+    query = {"day": int(day_number)}
+    if cycle_id:
+        query["cycle_id"] = cycle_id
+        
+    existing = topics_col.find_one(query)
+    is_updated = False
+    prev_title = None
+    prev_desc = None
+    if existing and existing.get("announced"):
+        is_updated = True
+        prev_title = existing.get("title")
+        prev_desc = existing.get("desc")
+        
+    update_fields = {
+        "title": title,
+        "desc": desc,
+        "announced": announced,
+        "is_updated": is_updated
+    }
+    if is_updated:
+        update_fields["prev_title"] = prev_title
+        update_fields["prev_desc"] = prev_desc
+    if announced:
+        update_fields["announced_at"] = datetime.utcnow()
+        
     result = topics_col.update_one(
-        {"day": int(day_number)},
-        {"$set": {"title": title, "desc": desc}}
+        query,
+        {"$set": update_fields}
     )
     
     if result.matched_count == 0:
         return jsonify({'error': 'Topic day not found!'}), 404
         
-    return jsonify({'message': f'Topic for Day {day_number} updated successfully!'}), 200
+    return jsonify({'message': f'Topic for Day {day_number} updated and announced successfully!'}), 200
+
+@app.route('/api/topics', methods=['POST'])
+@token_required
+def add_topic(current_user):
+    if current_user['role'] != 'leader':
+        return jsonify({'error': 'Unauthorized! Team Leads only.'}), 403
+        
+    data = request.get_json() or {}
+    date_str = data.get('date')
+    day_number_raw = data.get('day')
+    title = data.get('title')
+    desc = data.get('desc')
+    cycle_id = data.get('cycle_id')
+    
+    if not date_str or not title or not desc or not cycle_id:
+        return jsonify({'error': 'Date, title, description, and cycle_id are required!'}), 400
+        
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({'error': 'Invalid date format! Use YYYY-MM-DD.'}), 400
+        
+    day_number = int(day_number_raw) if day_number_raw is not None else 1
+    
+    query = {"cycle_id": cycle_id, "day": day_number}
+    existing = topics_col.find_one(query)
+    
+    is_updated = False
+    prev_title = None
+    prev_desc = None
+    if existing and existing.get("announced"):
+        is_updated = True
+        prev_title = existing.get("title")
+        prev_desc = existing.get("desc")
+        
+    update_fields = {
+        "cycle_id": cycle_id,
+        "day": day_number,
+        "date": date_str,
+        "title": title,
+        "desc": desc,
+        "announced": True,
+        "announced_at": datetime.utcnow(),
+        "is_updated": is_updated
+    }
+    if is_updated:
+        update_fields["prev_title"] = prev_title
+        update_fields["prev_desc"] = prev_desc
+        
+    topics_col.update_one(
+        query,
+        {"$set": update_fields},
+        upsert=True
+    )
+    
+    return jsonify({'message': f'Task for Day {day_number} ({date_str}) added and announced successfully!'}), 201
 
 # ==========================================
 # STUDENT ENDPOINTS
