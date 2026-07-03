@@ -194,6 +194,24 @@ export const api = {
     return response.json();
   },
 
+  // Analytics
+  async getAdminDashboardStats(timeframe = '30days', cycle = 'all') {
+    const response = await fetch(`${API_URL}/admin/dashboard-stats?timeframe=${timeframe}&cycle=${cycle}`, {
+      method: 'GET',
+      headers: getHeaders(),
+    });
+    return response.json();
+  },
+
+  async sendAdminStatsEmail(timeframe = '30days', cycle = 'all') {
+    const response = await fetch(`${API_URL}/admin/send-stats-email`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ timeframe, cycle }),
+    });
+    return response.json();
+  },
+
   // Helper to format image paths
   getImageUrl(path) {
     if (!path) return '';

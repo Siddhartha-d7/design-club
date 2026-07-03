@@ -1,4 +1,7 @@
 import os
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -632,6 +635,367 @@ def admin_get_uploads(current_user):
         u['_id'] = str(u['_id'])
         u['student_id'] = str(u['student_id'])
     return jsonify(uploads), 200
+
+# Helper to parse dates dynamically from ISO-8601 strings or Python datetime objects
+def parse_date(date_val):
+    if not date_val:
+        return None
+    if isinstance(date_val, datetime):
+        return date_val
+    if isinstance(date_val, str):
+        if date_val.endswith('Z'):
+            date_val = date_val[:-1]
+        try:
+            return datetime.fromisoformat(date_val)
+        except ValueError:
+            pass
+    return None
+
+# Gathers aggregated stats for dynamic dashboards & reports (JSON-DB fallback compatible)
+def get_aggregated_stats(cycle_id='all', timeframe='30days'):
+    students = list(users_col.find({"role": "student"}))
+    total_students = len(students)
+    
+    college_counts = {}
+    for s in students:
+        college = s.get("college_name", "N/A").strip()
+        if not college:
+            college = "N/A"
+        college_counts[college] = college_counts.get(college, 0) + 1
+        
+    college_breakdown = sorted(
+        [{"college": k, "count": v} for k, v in college_counts.items()],
+        key=lambda x: x["count"],
+        reverse=True
+    )
+    
+    query = {}
+    if cycle_id != 'all':
+        query["cycle_id"] = cycle_id
+        
+    uploads = list(uploads_col.find(query))
+    now = datetime.utcnow()
+    
+    if timeframe == '7days':
+        delta_days = 7
+    elif timeframe == '30days':
+        delta_days = 30
+    elif timeframe == '90days':
+        delta_days = 90
+    else:
+        delta_days = None
+
+    filtered_uploads = []
+    active_student_ids = set()
+    posts_in_period = 0
+    insta_picks_in_period = 0
+
+    for u in uploads:
+        sub_time = parse_date(u.get("submitted_at"))
+        if not sub_time:
+            continue
+            
+        in_range = True
+        if delta_days is not None:
+            cutoff = now - timedelta(days=delta_days)
+            if sub_time < cutoff:
+                in_range = False
+                
+        if in_range:
+            filtered_uploads.append(u)
+            active_student_ids.add(str(u.get("student_id")))
+            posts_in_period += 1
+            if u.get("is_insta_pick", False):
+                insta_picks_in_period += 1
+
+    active_last_month_ids = set()
+    cutoff_30d = now - timedelta(days=30)
+    for u in uploads:
+        sub_time = parse_date(u.get("submitted_at"))
+        if sub_time and sub_time >= cutoff_30d:
+            active_last_month_ids.add(str(u.get("student_id")))
+    active_members_last_month = len(active_last_month_ids)
+
+    posts_last_week = 0
+    cutoff_7d = now - timedelta(days=7)
+    for u in uploads:
+        sub_time = parse_date(u.get("submitted_at"))
+        if sub_time and sub_time >= cutoff_7d:
+            posts_last_week += 1
+
+    insta_last_week = 0
+    for u in uploads:
+        sub_time = parse_date(u.get("submitted_at"))
+        if sub_time and sub_time >= cutoff_7d and u.get("is_insta_pick", False):
+            insta_last_week += 1
+
+    daily_groups = {}
+    if delta_days is not None:
+        for i in range(delta_days - 1, -1, -1):
+            day_date = (now - timedelta(days=i)).date()
+            daily_groups[day_date.isoformat()] = {"posts": 0, "insta_picks": 0, "label": day_date.strftime("%b %d")}
+
+    for u in filtered_uploads:
+        sub_time = parse_date(u.get("submitted_at"))
+        if sub_time:
+            day_str = sub_time.date().isoformat()
+            if day_str not in daily_groups:
+                if delta_days is None:
+                    daily_groups[day_str] = {"posts": 0, "insta_picks": 0, "label": sub_time.strftime("%b %d")}
+                else:
+                    continue
+            daily_groups[day_str]["posts"] += 1
+            if u.get("is_insta_pick", False):
+                daily_groups[day_str]["insta_picks"] += 1
+
+    chart_data = []
+    for k in sorted(daily_groups.keys()):
+        item = daily_groups[k]
+        chart_data.append({
+            "date": k,
+            "label": item["label"],
+            "posts": item["posts"],
+            "insta_picks": item["insta_picks"]
+        })
+
+    return {
+        "total_students": total_students,
+        "college_breakdown": college_breakdown,
+        "active_members_last_month": active_members_last_month,
+        "posts_last_week": posts_last_week,
+        "insta_picks_last_week": insta_last_week,
+        "timeframe_stats": {
+            "posts_count": posts_in_period,
+            "insta_picks_count": insta_picks_in_period,
+            "active_members_count": len(active_student_ids)
+        },
+        "chart_data": chart_data
+    }
+
+def generate_stats_html_report(stats, timeframe, cycle_name):
+    college_rows = ""
+    for c in stats["college_breakdown"][:10]:
+        percent = (c["count"] / max(stats["total_students"], 1)) * 100
+        college_rows += f"""
+        <tr>
+            <td style="padding: 8px 12px; font-family: monospace; font-size: 13px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">{c["college"]}</td>
+            <td style="padding: 8px 12px; font-family: monospace; font-size: 13px; color: #4b5563; border-bottom: 1px solid #f3f4f6; text-align: right; font-weight: bold;">{c["count"]}</td>
+            <td style="padding: 8px 12px; font-family: monospace; font-size: 13px; color: #6b7280; border-bottom: 1px solid #f3f4f6; text-align: right;">{percent:.1f}%</td>
+        </tr>
+        """
+
+    timeframe_labels = {
+        "7days": "Last 7 Days",
+        "30days": "Last 30 Days",
+        "90days": "Last 90 Days",
+        "all": "All Time"
+    }
+    tf_label = timeframe_labels.get(timeframe, timeframe)
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Design Club Analytics Report</title>
+    </head>
+    <body style="margin: 0; padding: 0; background-color: #f9fafb; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+        <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f9fafb; padding: 30px 15px;">
+            <tr>
+                <td align="center">
+                    <table width="600" border="0" cellspacing="0" cellpadding="0" style="background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+                        <!-- Header -->
+                        <tr>
+                            <td style="background-color: #4f46e5; padding: 32px; text-align: center;">
+                                <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 800; letter-spacing: -0.025em; text-transform: uppercase;">Design Club Insights</h1>
+                                <p style="margin: 8px 0 0 0; color: #c7d2fe; font-size: 14px;">Automated Coordinator Analytics Report</p>
+                            </td>
+                        </tr>
+                        
+                        <!-- Content Body -->
+                        <tr>
+                            <td style="padding: 32px;">
+                                <p style="margin: 0 0 20px 0; font-size: 15px; line-height: 1.5; color: #374151;">
+                                    Hello Manager,
+                                </p>
+                                <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.5; color: #374151;">
+                                    Here is the activity and participation summary for the Design Club dashboard.
+                                </p>
+                                
+                                <div style="margin-bottom: 24px; padding: 12px 16px; background-color: #f3f4f6; border-left: 4px solid #4f46e5; border-radius: 4px;">
+                                    <span style="font-size: 11px; font-weight: bold; color: #4b5563; text-transform: uppercase; font-family: monospace;">Scope Parameters</span>
+                                    <div style="font-size: 13px; color: #1f2937; margin-top: 4px; font-family: monospace;">
+                                        <strong>Cycle:</strong> {cycle_name}<br>
+                                        <strong>Period Filter:</strong> {tf_label}
+                                    </div>
+                                </div>
+
+                                <!-- Key Statistics Grid -->
+                                <table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-bottom: 32px;">
+                                    <tr>
+                                        <!-- Card 1 -->
+                                        <td width="48%" style="background-color: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 12px; padding: 16px; text-align: center; vertical-align: top;">
+                                            <span style="font-size: 10px; font-weight: bold; color: #6d28d9; text-transform: uppercase; font-family: monospace; letter-spacing: 0.05em; display: block; margin-bottom: 6px;">Total Registered Students</span>
+                                            <span style="font-size: 28px; font-weight: 900; color: #1e1b4b; font-family: monospace; display: block;">{stats["total_students"]}</span>
+                                        </td>
+                                        <td width="4%">&nbsp;</td>
+                                        <!-- Card 2 -->
+                                        <td width="48%" style="background-color: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 12px; padding: 16px; text-align: center; vertical-align: top;">
+                                            <span style="font-size: 10px; font-weight: bold; color: #047857; text-transform: uppercase; font-family: monospace; letter-spacing: 0.05em; display: block; margin-bottom: 6px;">Active Members (Last Month)</span>
+                                            <span style="font-size: 28px; font-weight: 900; color: #064e3b; font-family: monospace; display: block;">{stats["active_members_last_month"]}</span>
+                                        </td>
+                                    </tr>
+                                    <tr><td height="16" colspan="3"></td></tr>
+                                    <tr>
+                                        <!-- Card 3 -->
+                                        <td width="48%" style="background-color: #f0f9ff; border: 1px solid #bae6fd; border-radius: 12px; padding: 16px; text-align: center; vertical-align: top;">
+                                            <span style="font-size: 10px; font-weight: bold; color: #0369a1; text-transform: uppercase; font-family: monospace; letter-spacing: 0.05em; display: block; margin-bottom: 6px;">Uploads (Last Week)</span>
+                                            <span style="font-size: 28px; font-weight: 900; color: #0c4a6e; font-family: monospace; display: block;">{stats["posts_last_week"]}</span>
+                                        </td>
+                                        <td width="4%">&nbsp;</td>
+                                        <!-- Card 4 -->
+                                        <td width="48%" style="background-color: #fdf2f8; border: 1px solid #fbcfe8; border-radius: 12px; padding: 16px; text-align: center; vertical-align: top;">
+                                            <span style="font-size: 10px; font-weight: bold; color: #be185d; text-transform: uppercase; font-family: monospace; letter-spacing: 0.05em; display: block; margin-bottom: 6px;">Insta Picks (Last Week)</span>
+                                            <span style="font-size: 28px; font-weight: 900; color: #500724; font-family: monospace; display: block;">{stats["insta_picks_last_week"]}</span>
+                                        </td>
+                                    </tr>
+                                </table>
+
+                                <!-- Period Summary Header -->
+                                <h3 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 700; color: #111827; border-bottom: 2px solid #e5e7eb; padding-bottom: 6px; text-transform: uppercase; letter-spacing: 0.025em;">Period Activity Stats ({tf_label})</h3>
+                                <table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-bottom: 32px; background-color: #fafafa; border-radius: 8px; padding: 16px; border: 1px solid #f3f4f6;">
+                                    <tr>
+                                        <td style="font-size: 14px; padding: 6px 0; color: #4b5563;">Submissions in Period:</td>
+                                        <td align="right" style="font-size: 14px; padding: 6px 0; font-weight: bold; color: #111827; font-family: monospace;">{stats["timeframe_stats"]["posts_count"]}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="font-size: 14px; padding: 6px 0; color: #4b5563;">Instagram Picks in Period:</td>
+                                        <td align="right" style="font-size: 14px; padding: 6px 0; font-weight: bold; color: #111827; font-family: monospace;">{stats["timeframe_stats"]["insta_picks_count"]}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="font-size: 14px; padding: 6px 0; color: #4b5563;">Unique Participating Students:</td>
+                                        <td align="right" style="font-size: 14px; padding: 6px 0; font-weight: bold; color: #111827; font-family: monospace;">{stats["timeframe_stats"]["active_members_count"]}</td>
+                                    </tr>
+                                </table>
+
+                                <!-- College Breakdown Table -->
+                                <h3 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 700; color: #111827; border-bottom: 2px solid #e5e7eb; padding-bottom: 6px; text-transform: uppercase; letter-spacing: 0.025em;">College Distribution (Top 10)</h3>
+                                <table width="100%" border="0" cellspacing="0" cellpadding="0" style="border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; border-collapse: collapse;">
+                                    <tr style="background-color: #f9fafb;">
+                                        <th align="left" style="padding: 10px 12px; font-size: 11px; font-weight: bold; color: #374151; border-bottom: 2px solid #e5e7eb; text-transform: uppercase;">College Name</th>
+                                        <th align="right" style="padding: 10px 12px; font-size: 11px; font-weight: bold; color: #374151; border-bottom: 2px solid #e5e7eb; text-transform: uppercase; width: 80px;">Students</th>
+                                        <th align="right" style="padding: 10px 12px; font-size: 11px; font-weight: bold; color: #374151; border-bottom: 2px solid #e5e7eb; text-transform: uppercase; width: 70px;">Ratio</th>
+                                    </tr>
+                                    {college_rows}
+                                </table>
+                            </td>
+                        </tr>
+                        
+                        <!-- Footer -->
+                        <tr>
+                            <td style="background-color: #f3f4f6; padding: 24px; text-align: center; border-top: 1px solid #e5e7eb;">
+                                <p style="margin: 0; font-size: 12px; color: #6b7280; line-height: 1.5;">
+                                    This report was generated and triggered from the Coordinator Dashboard of the Design Club application.
+                                </p>
+                                <p style="margin: 4px 0 0 0; font-size: 12px; color: #9ca3af; font-family: monospace;">
+                                    System Time: {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+    </body>
+    </html>
+    """
+    return html_content
+
+def send_email_report(html_content, recipient):
+    server = app.config.get("SMTP_SERVER") or Config.SMTP_SERVER
+    port = app.config.get("SMTP_PORT") or Config.SMTP_PORT
+    username = app.config.get("SMTP_USERNAME") or Config.SMTP_USERNAME
+    password = app.config.get("SMTP_PASSWORD") or Config.SMTP_PASSWORD
+    sender = (app.config.get("SMTP_SENDER") or Config.SMTP_SENDER) or username
+    
+    if not username or not password:
+        return False, "SMTP username or password not configured"
+        
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = "Design Club Coordinator Analytics Report"
+        msg['From'] = f"Design Club Dashboard <{sender}>"
+        msg['To'] = recipient
+        msg.attach(MIMEText(html_content, 'html'))
+        
+        if port == 465:
+            smtp_conn = smtplib.SMTP_SSL(server, port, timeout=5)
+        else:
+            smtp_conn = smtplib.SMTP(server, port, timeout=5)
+            smtp_conn.ehlo()
+            smtp_conn.starttls()
+            smtp_conn.ehlo()
+            
+        smtp_conn.login(username, password)
+        smtp_conn.sendmail(sender, [recipient], msg.as_string())
+        smtp_conn.quit()
+        return True, "Email sent successfully"
+    except Exception as e:
+        return False, str(e)
+
+@app.route('/api/admin/dashboard-stats', methods=['GET'])
+@token_required
+def admin_get_dashboard_stats(current_user):
+    if current_user['role'] != 'leader':
+        return jsonify({'error': 'Unauthorized! Team Leads only.'}), 403
+        
+    cycle_id = request.args.get('cycle', 'all')
+    timeframe = request.args.get('timeframe', '30days')
+    
+    stats = get_aggregated_stats(cycle_id, timeframe)
+    return jsonify(stats), 200
+
+@app.route('/api/admin/send-stats-email', methods=['POST'])
+@token_required
+def admin_send_stats_email(current_user):
+    if current_user['role'] != 'leader':
+        return jsonify({'error': 'Unauthorized! Team Leads only.'}), 403
+        
+    data = request.get_json(silent=True) or {}
+    cycle_id = data.get('cycle', 'all')
+    timeframe = data.get('timeframe', '30days')
+    recipient = "madhu@codegnan.com"
+    
+    cycle_name = next((c["name"] for c in CYCLES if c["id"] == cycle_id), cycle_id)
+    if cycle_id == "all":
+        cycle_name = "All Cycles"
+        
+    stats = get_aggregated_stats(cycle_id, timeframe)
+    html_content = generate_stats_html_report(stats, timeframe, cycle_name)
+    
+    success, reason = send_email_report(html_content, recipient)
+    
+    if not success:
+        debug_filename = "last_sent_report.html"
+        debug_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), debug_filename)
+        try:
+            with open(debug_path, "w", encoding="utf-8") as f:
+                f.write(html_content)
+            return jsonify({
+                'message': f'SMTP credentials not set or failed ({reason}). Report written locally to backend/{debug_filename}',
+                'saved_local': True,
+                'error_detail': reason
+            }), 200
+        except Exception as file_err:
+            return jsonify({
+                'error': f'Failed to send email ({reason}) and failed to write local file: {str(file_err)}'
+            }), 500
+            
+    return jsonify({
+        'message': f'Report successfully emailed to {recipient}!',
+        'saved_local': False
+    }), 200
+
 
 @app.route('/api/admin/student/<student_id>/uploads', methods=['GET'])
 @token_required

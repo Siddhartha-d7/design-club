@@ -86,8 +86,13 @@ export default function App() {
   const [viewingSubmission, setViewingSubmission] = useState(null);
   const [celebAwardUpload, setCelebAwardUpload] = useState(null);
   
-  const [coordinatorTab, setCoordinatorTab] = useState('submissions'); // 'submissions' | 'polls'
+  const [coordinatorTab, setCoordinatorTab] = useState('submissions'); // 'submissions' | 'polls' | 'insights'
+  const [adminStats, setAdminStats] = useState(null);
+  const [statsTimeframe, setStatsTimeframe] = useState('30days');
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [emailStatus, setEmailStatus] = useState('');
   const [instaPicks, setInstaPicks] = useState([]);
+
   const [adminPolls, setAdminPolls] = useState([]);
   const [activePollAdmin, setActivePollAdmin] = useState(null);
   const [activePoll, setActivePoll] = useState(null);
@@ -286,7 +291,46 @@ export default function App() {
     }
   };
 
+  const loadAdminStats = async (timeframe = statsTimeframe, cycle = selectedCycle) => {
+    try {
+      const res = await api.getAdminDashboardStats(timeframe, cycle);
+      if (res && !res.error) {
+        setAdminStats(res);
+      }
+    } catch (e) {
+      console.error("Failed to fetch admin stats", e);
+    }
+  };
+
+  const handleSendEmail = async () => {
+    setEmailLoading(true);
+    setEmailStatus('');
+    try {
+      const res = await api.sendAdminStatsEmail(statsTimeframe, selectedCycle);
+      if (res.error) {
+        setEmailStatus(`❌ ${res.error}`);
+      } else {
+        setEmailStatus(`✅ ${res.message}`);
+      }
+    } catch (err) {
+      setEmailStatus("❌ Failed to contact reporting server.");
+    } finally {
+      setEmailLoading(false);
+      setTimeout(() => {
+        setEmailStatus('');
+      }, 5000);
+    }
+  };
+
+  useEffect(() => {
+
+    if (token && user && user.role === 'leader') {
+      loadAdminStats(statsTimeframe, selectedCycle);
+    }
+  }, [statsTimeframe, selectedCycle, token, user?.role]);
+
   const handleLogin = async (e) => {
+
     e.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
@@ -1556,9 +1600,20 @@ export default function App() {
               >
                 🗳️ Weekly Saturday Polls
               </button>
+              <button
+                type="button"
+                onClick={() => setCoordinatorTab('insights')}
+                className={`py-3 px-6 font-mono text-xs uppercase tracking-wider font-bold border-b-2 transition-all cursor-pointer ${
+                  coordinatorTab === 'insights'
+                    ? 'border-black text-black'
+                    : 'border-transparent text-zinc-400 hover:text-zinc-650'
+                }`}
+              >
+                📊 Insights & Graphs
+              </button>
             </div>
 
-            {coordinatorTab === 'submissions' ? (
+            {coordinatorTab === 'submissions' && (
               <>
                 {/* Split panels */}
                 <div className="premium-card p-6">
@@ -1902,7 +1957,9 @@ export default function App() {
               )}
             </div>
           </>
-        ) : (
+        )}
+
+        {coordinatorTab === 'polls' && (
           <div className="space-y-8 animate-fade-in">
             {/* 1. Active Poll Status / Controls */}
             <div className="premium-card p-6">
@@ -2150,15 +2207,288 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {coordinatorTab === 'insights' && (
+          <div className="space-y-8 animate-fade-in">
+            
+            {/* Control Bar */}
+            <div className="premium-card p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <h3 className="text-sm font-bold font-mono uppercase tracking-wider text-black">Insights & Analytics Controls</h3>
+                <p className="text-xs text-zinc-400 font-light mt-0.5">Filter data timeframe and send summary reports directly to your manager.</p>
+              </div>
+              
+              <div className="flex flex-wrap items-center gap-3">
+                {/* Timeframe selector */}
+                <div className="flex bg-zinc-100 p-0.5 rounded-lg border border-zinc-200">
+                  {['7days', '30days', '90days', 'all'].map((tf) => {
+                    const label = tf === '7days' ? '7 Days' : tf === '30days' ? '30 Days' : tf === '90days' ? '90 Days' : 'All Time';
+                    return (
+                      <button
+                        key={tf}
+                        onClick={() => setStatsTimeframe(tf)}
+                        className={`px-3 py-1 text-[10px] font-mono font-bold rounded-md uppercase transition-all cursor-pointer ${
+                          statsTimeframe === tf
+                            ? 'bg-white text-black shadow-xs'
+                            : 'text-zinc-400 hover:text-zinc-700'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Send report button */}
+                <div className="flex flex-col items-end">
+                  <button
+                    onClick={handleSendEmail}
+                    disabled={emailLoading}
+                    className={`px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[10px] font-mono font-bold uppercase transition-all flex items-center gap-1.5 cursor-pointer shadow-xs ${
+                      emailLoading ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                  >
+                    {emailLoading ? (
+                      <>
+                        <svg className="animate-spin h-3 w-3 text-white" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                        Sending...
+                      </>
+                    ) : (
+                      <>✉️ Send to Manager</>
+                    )}
+                  </button>
+                  {emailStatus && (
+                    <span className="text-[9px] font-mono font-bold mt-1 text-zinc-500 animate-fade-in block">
+                      {emailStatus}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Metrics cards grid */}
+            {!adminStats ? (
+              <div className="text-center py-20 text-zinc-400 font-mono text-xs premium-card">
+                <svg className="animate-spin h-6 w-6 text-zinc-400 mx-auto mb-3" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                Gathering club metrics...
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 animate-fade-in">
+                  
+                  {/* Card 1: Registered Students */}
+                  <div className="bg-gradient-to-br from-indigo-50/50 via-slate-50/70 to-blue-50/30 border border-zinc-200 hover:border-indigo-300 hover:shadow-lg hover:shadow-indigo-100/30 rounded-2xl p-5 transition-all duration-300 transform hover:-translate-y-0.5">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-bold font-mono tracking-widest text-indigo-750 uppercase">Total Students</p>
+                      <div className="p-2 bg-indigo-100 rounded-xl text-indigo-600">
+                        <User className="w-5 h-5" />
+                      </div>
+                    </div>
+                    <h3 className="text-3xl font-black tracking-tight text-indigo-950 font-mono mt-2">{adminStats.total_students}</h3>
+                    <span className="text-[10px] font-mono text-indigo-600/80 block mt-3 border-t border-indigo-100/50 pt-2">All time registrations</span>
+                  </div>
+
+                  {/* Card 2: Active members */}
+                  <div className="bg-gradient-to-br from-emerald-50/50 via-slate-50/70 to-teal-50/30 border border-zinc-200 hover:border-emerald-300 hover:shadow-lg hover:shadow-emerald-100/30 rounded-2xl p-5 transition-all duration-300 transform hover:-translate-y-0.5">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-bold font-mono tracking-widest text-emerald-750 uppercase">Active (Last Month)</p>
+                      <div className="p-2 bg-emerald-100 rounded-xl text-emerald-600">
+                        <CheckCircle className="w-5 h-5" />
+                      </div>
+                    </div>
+                    <h3 className="text-3xl font-black tracking-tight text-emerald-950 font-mono mt-2">{adminStats.active_members_last_month}</h3>
+                    <span className="text-[10px] font-mono text-emerald-600/80 block mt-3 border-t border-emerald-100/50 pt-2">Unique members submitting</span>
+                  </div>
+
+                  {/* Card 3: Uploads in timeframe */}
+                  <div className="bg-gradient-to-br from-purple-50/50 via-slate-50/70 to-pink-50/30 border border-zinc-200 hover:border-purple-300 hover:shadow-lg hover:shadow-purple-100/30 rounded-2xl p-5 transition-all duration-300 transform hover:-translate-y-0.5">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-bold font-mono tracking-widest text-purple-750 uppercase">Submissions in Period</p>
+                      <div className="p-2 bg-purple-100 rounded-xl text-purple-600">
+                        <Image className="w-5 h-5" />
+                      </div>
+                    </div>
+                    <h3 className="text-3xl font-black tracking-tight text-purple-950 font-mono mt-2">{adminStats.timeframe_stats.posts_count}</h3>
+                    <span className="text-[10px] font-mono text-purple-600/80 block mt-3 border-t border-purple-100/50 pt-2">Total tasks/memes posted</span>
+                  </div>
+
+                  {/* Card 4: Insta Picks in timeframe */}
+                  <div className="bg-gradient-to-br from-pink-50/50 via-slate-50/70 to-orange-50/30 border border-zinc-200 hover:border-pink-300 hover:shadow-lg hover:shadow-pink-100/30 rounded-2xl p-5 transition-all duration-300 transform hover:-translate-y-0.5">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-bold font-mono tracking-widest text-pink-750 uppercase">Insta Picks in Period</p>
+                      <div className="p-2 bg-pink-100 rounded-xl text-pink-600">
+                        <Sparkles className="w-5 h-5" />
+                      </div>
+                    </div>
+                    <h3 className="text-3xl font-black tracking-tight text-pink-950 font-mono mt-2">{adminStats.timeframe_stats.insta_picks_count}</h3>
+                    <span className="text-[10px] font-mono text-pink-600/80 block mt-3 border-t border-pink-100/50 pt-2">Showcase picks selected</span>
+                  </div>
+
+                </div>
+
+                {/* Graph & College breakdown side-by-side */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fade-in">
+                  
+                  {/* Left columns: Chart */}
+                  <div className="lg:col-span-2 premium-card p-6 flex flex-col justify-between">
+                    <div>
+                      <div className="flex justify-between items-center mb-6 pb-4 border-b border-zinc-200">
+                        <div>
+                          <h3 className="text-sm font-bold font-mono uppercase tracking-wider text-black">Participation Trend Timeline</h3>
+                          <p className="text-xs text-zinc-400 font-light mt-0.5">Submissions & Instagram picks over selected timeframe.</p>
+                        </div>
+                        <div className="flex gap-4 text-[10px] font-mono font-bold select-none">
+                          <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-indigo-500 rounded-sm inline-block"></span>Submissions</span>
+                          <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-pink-500 rounded-sm inline-block"></span>Insta Picks</span>
+                        </div>
+                      </div>
+
+                      {adminStats.chart_data && adminStats.chart_data.length > 0 ? (
+                        (() => {
+                          const width = 600;
+                          const height = 250;
+                          const padLeft = 30;
+                          const padRight = 10;
+                          const padTop = 15;
+                          const padBottom = 35;
+                          
+                          const cWidth = width - padLeft - padRight;
+                          const cHeight = height - padTop - padBottom;
+                          
+                          const chartData = adminStats.chart_data;
+                          const maxVal = Math.max(
+                            ...chartData.map(d => Math.max(d.posts || 0, d.insta_picks || 0)),
+                            5
+                          );
+                          
+                          const points = chartData.map((d, idx) => {
+                            const x = padLeft + (chartData.length > 1 ? (idx / (chartData.length - 1)) * cWidth : cWidth / 2);
+                            const yPosts = height - padBottom - ((d.posts || 0) / maxVal) * cHeight;
+                            const yInsta = height - padBottom - ((d.insta_picks || 0) / maxVal) * cHeight;
+                            return { x, yPosts, yInsta, label: d.label, posts: d.posts, insta: d.insta_picks };
+                          });
+                          
+                          const postsPath = points.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x} ${p.yPosts}`).join(' ');
+                          const instaPath = points.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x} ${p.yInsta}`).join(' ');
+                          const postsAreaPath = points.length > 0 
+                            ? `${postsPath} L ${points[points.length - 1].x} ${height - padBottom} L ${points[0].x} ${height - padBottom} Z` 
+                            : '';
+                            
+                          const yTicks = [0, Math.round(maxVal / 2), maxVal];
+                          const xTickInterval = Math.max(1, Math.floor(chartData.length / 6));
+                          const xTicks = points.filter((_, idx) => idx % xTickInterval === 0);
+
+                          return (
+                            <div className="relative">
+                              <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto">
+                                <defs>
+                                  <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="0%" stopColor="#6366f1" stopOpacity="0.12" />
+                                    <stop offset="100%" stopColor="#6366f1" stopOpacity="0.00" />
+                                  </linearGradient>
+                                </defs>
+                                
+                                {/* Grid lines */}
+                                {yTicks.map((tick, idx) => {
+                                  const y = height - padBottom - (tick / maxVal) * cHeight;
+                                  return (
+                                    <g key={idx}>
+                                      <line x1={padLeft} y1={y} x2={width - padRight} y2={y} stroke="#f1f5f9" strokeWidth="1" />
+                                      <text x={padLeft - 8} y={y + 3} textAnchor="end" className="text-[9px] font-mono fill-zinc-400 font-bold">{tick}</text>
+                                    </g>
+                                  );
+                                })}
+                                
+                                {/* X grid & labels */}
+                                {xTicks.map((t, idx) => (
+                                  <g key={idx}>
+                                    <line x1={t.x} y1={padTop} x2={t.x} y2={height - padBottom} stroke="#f8fafc" strokeDasharray="3 3" />
+                                    <text x={t.x} y={height - padBottom + 16} textAnchor="middle" className="text-[8px] font-mono font-bold fill-zinc-450 uppercase">{t.label}</text>
+                                  </g>
+                                ))}
+                                
+                                {/* Paths */}
+                                {postsAreaPath && <path d={postsAreaPath} fill="url(#chartGrad)" />}
+                                {postsPath && <path d={postsPath} fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />}
+                                {instaPath && <path d={instaPath} fill="none" stroke="#ec4899" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="3 3" />}
+                                
+                                {/* Interaction nodes */}
+                                {points.map((p, idx) => (
+                                  <g key={idx} className="group cursor-pointer">
+                                    <circle cx={p.x} cy={p.yPosts} r="8" className="fill-transparent hover:fill-indigo-500/10" />
+                                    <circle cx={p.x} cy={p.yPosts} r="2.5" className="fill-indigo-600 stroke-white stroke-[1.5] opacity-0 group-hover:opacity-100 transition-opacity" />
+                                    <title>{`${p.label}: ${p.posts} Submissions, ${p.insta} Insta Picks`}</title>
+                                  </g>
+                                ))}
+                              </svg>
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        <div className="text-center py-20 text-zinc-400 font-mono text-xs bg-zinc-50 border border-zinc-150 rounded-2xl">
+                          No trend points recorded for timeframe.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Right column: College breakdown */}
+                  <div className="premium-card p-6 flex flex-col justify-between">
+                    <div>
+                      <div className="mb-6 border-b border-zinc-200 pb-4">
+                        <h3 className="text-sm font-bold font-mono uppercase tracking-wider text-black">Colleges Representation</h3>
+                        <p className="text-xs text-zinc-400 font-light mt-0.5">Breakdown of student registrations by college.</p>
+                      </div>
+
+                      <div className="space-y-4 max-h-[220px] overflow-y-auto pr-1">
+                        {adminStats.college_breakdown && adminStats.college_breakdown.length > 0 ? (
+                          adminStats.college_breakdown.map((item, idx) => {
+                            const percent = (item.count / Math.max(adminStats.total_students, 1)) * 100;
+                            return (
+                              <div key={idx} className="space-y-1 bg-zinc-50/50 p-2 border border-zinc-100 rounded-xl hover:bg-zinc-50 transition-colors">
+                                <div className="flex justify-between items-center text-[10px] font-mono">
+                                  <span className="text-zinc-800 font-bold truncate pr-3">{item.college}</span>
+                                  <span className="text-zinc-500 shrink-0 font-bold">{item.count} std ({percent.toFixed(0)}%)</span>
+                                </div>
+                                <div className="w-full bg-zinc-200/80 h-1.5 rounded-full overflow-hidden">
+                                  <div 
+                                    className="bg-indigo-600 h-full rounded-full transition-all duration-500" 
+                                    style={{ width: `${percent}%` }}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <div className="text-center py-10 text-zinc-400 font-mono text-xs">
+                            No college distributions found.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
           </div>
         )}
 
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-zinc-200 bg-white py-8 text-center text-zinc-400 text-[10px] font-mono select-none uppercase tracking-widest mt-12 z-10">
+      <footer className="border-t border-zinc-200 bg-white py-8 text-center text-zinc-400 text-[10px] font-mono select-none uppercase tracking-widest mt-12 z-10 flex flex-col items-center justify-center gap-3">
+        <img src={logoImg} alt="Codegnan Logo" className="h-8 object-contain" />
         <p>© 2026 COMMUNITY DESIGN CLUB. ALL RIGHTS RESERVED.</p>
-        <p className="mt-1 text-zinc-300">Clean minimalist theme layout.</p>
       </footer>
 
       {/* ==========================================
