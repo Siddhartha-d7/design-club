@@ -242,7 +242,9 @@ def compute_leaderboard_ranks(cycle_id):
             "points": student["points"],
             "rank": rank,
             "title": title,
-            "badges": badges
+            "badges": badges,
+            "is_sap_member": student.get("is_sap_member", False),
+            "profile_pic": student.get("profile_pic", "")
         })
         
     return leaderboard
@@ -261,6 +263,8 @@ def register():
     college_name = data.get('college_name')
     passout_year = data.get('passout_year')
     role = data.get('role', 'student') # Default to student
+    is_sap_member = data.get('is_sap_member', False)
+    sap_secret_key = data.get('sap_secret_key', '')
     
     if not name or not email or not password:
         return jsonify({'error': 'Name, email, and password are required!'}), 400
@@ -269,6 +273,10 @@ def register():
         passcode = data.get('passcode')
         if passcode != Config.LEADER_PASSCODE:
             return jsonify({'error': 'Invalid Team Lead verification passcode!'}), 403
+            
+    if is_sap_member:
+        if sap_secret_key != "CCH-001":
+            return jsonify({'error': 'Invalid SAP member secret key!'}), 400
             
     # Check if user already exists
     if users_col.find_one({"email": email.lower()}):
@@ -281,6 +289,7 @@ def register():
         "college_name": college_name or "N/A",
         "passout_year": passout_year or "N/A",
         "role": role,
+        "is_sap_member": is_sap_member,
         "points": 0,
         "feedback_points": 0, # +2 pts for feedback, max 3/day
         "manual_bonus": 0,
@@ -299,7 +308,8 @@ def register():
             'name': name,
             'email': email,
             'role': role,
-            'points': 0
+            'points': 0,
+            'is_sap_member': is_sap_member
         }
     }), 201
 
@@ -329,7 +339,9 @@ def login():
             'name': user['name'],
             'email': user['email'],
             'role': user['role'],
-            'points': points
+            'points': points,
+            'is_sap_member': user.get("is_sap_member", False),
+            'profile_pic': user.get("profile_pic", "")
         }
     }), 200
 
@@ -551,6 +563,65 @@ def get_student_dashboard(current_user):
         "uploads": uploads
     }), 200
 
+@app.route('/api/student/profile-pic', methods=['POST'])
+@token_required
+def student_upload_profile_pic(current_user):
+    if current_user['role'] != 'student':
+        return jsonify({'error': 'Unauthorized! Students only.'}), 403
+        
+    # Check if they sent a preset name in JSON body
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        preset = data.get('preset')
+        if preset:
+            from bson import ObjectId
+            users_col.update_one(
+                {"_id": ObjectId(current_user['_id'])},
+                {"$set": {"profile_pic": f"preset_{preset}"}}
+            )
+            return jsonify({
+                'message': 'Profile preset updated successfully!',
+                'profile_pic': f"preset_{preset}"
+            }), 200
+
+    if 'profile_pic' not in request.files:
+        return jsonify({'error': 'No file part or preset in request!'}), 400
+        
+    file = request.files['profile_pic']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file!'}), 400
+        
+    # Read the file size by seeking
+    file.seek(0, os.SEEK_END)
+    file_size = file.tell()
+    file.seek(0)
+    
+    # 5MB limit
+    if file_size > 5 * 1024 * 1024:
+        return jsonify({'error': 'File size exceeds 5MB limit!'}), 400
+        
+    filename = file.filename
+    ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+    if ext not in ['jpg', 'jpeg', 'png', 'gif', 'webp']:
+        return jsonify({'error': 'Only JPG, JPEG, PNG, GIF, and WEBP images are allowed!'}), 400
+        
+    from werkzeug.utils import secure_filename
+    timestamp = int(datetime.utcnow().timestamp())
+    safe_name = f"profile_pic_{current_user['_id']}_{timestamp}.{ext}"
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], safe_name)
+    file.save(file_path)
+    
+    from bson import ObjectId
+    users_col.update_one(
+        {"_id": ObjectId(current_user['_id'])},
+        {"$set": {"profile_pic": safe_name}}
+    )
+    
+    return jsonify({
+        'message': 'Profile picture uploaded successfully!',
+        'profile_pic': safe_name
+    }), 200
+
 @app.route('/api/student/upload', methods=['POST'])
 @token_required
 def student_upload(current_user):
@@ -724,9 +795,25 @@ def admin_get_uploads(current_user):
         query["cycle_id"] = cycle_id
         
     uploads = list(uploads_col.find(query).sort("submitted_at", -1))
+    
+    # Pre-fetch students to map is_sap_member status
+    from bson import ObjectId
+    student_ids = []
+    for u in uploads:
+        sid_str = str(u.get('student_id'))
+        if len(sid_str) == 24:
+            try:
+                student_ids.append(ObjectId(sid_str))
+            except Exception:
+                pass
+                
+    students_list = list(users_col.find({"_id": {"$in": student_ids}}))
+    student_sap_map = {str(s['_id']): s.get("is_sap_member", False) for s in students_list}
+    
     for u in uploads:
         u['_id'] = str(u['_id'])
         u['student_id'] = str(u['student_id'])
+        u['is_sap_member'] = student_sap_map.get(u['student_id'], False)
     return jsonify(uploads), 200
 
 # Helper to parse dates dynamically from ISO-8601 strings or Python datetime objects
@@ -748,6 +835,12 @@ def parse_date(date_val):
 def get_aggregated_stats(cycle_id='all', timeframe='30days'):
     students = list(users_col.find({"role": "student"}))
     total_students = len(students)
+    
+    sap_students = [s for s in students if s.get("is_sap_member", False)]
+    normal_students = [s for s in students if not s.get("is_sap_member", False)]
+    
+    sap_student_ids = {str(s["_id"]) for s in sap_students}
+    normal_student_ids = {str(s["_id"]) for s in normal_students}
     
     college_counts = {}
     for s in students:
@@ -789,7 +882,7 @@ def get_aggregated_stats(cycle_id='all', timeframe='30days'):
             continue
             
         in_range = True
-        if delta_days is not None:
+        if cycle_id == 'all' and delta_days is not None:
             cutoff = now - timedelta(days=delta_days)
             if sub_time < cutoff:
                 in_range = False
@@ -802,11 +895,15 @@ def get_aggregated_stats(cycle_id='all', timeframe='30days'):
                 insta_picks_in_period += 1
 
     active_last_month_ids = set()
-    cutoff_30d = now - timedelta(days=30)
-    for u in uploads:
-        sub_time = parse_date(u.get("submitted_at"))
-        if sub_time and sub_time >= cutoff_30d:
+    if cycle_id != 'all':
+        for u in uploads:
             active_last_month_ids.add(str(u.get("student_id")))
+    else:
+        cutoff_30d = now - timedelta(days=30)
+        for u in uploads:
+            sub_time = parse_date(u.get("submitted_at"))
+            if sub_time and sub_time >= cutoff_30d:
+                active_last_month_ids.add(str(u.get("student_id")))
     active_members_last_month = len(active_last_month_ids)
 
     posts_last_week = 0
@@ -823,17 +920,57 @@ def get_aggregated_stats(cycle_id='all', timeframe='30days'):
             insta_last_week += 1
 
     daily_groups = {}
-    if delta_days is not None:
-        for i in range(delta_days - 1, -1, -1):
-            day_date = (now - timedelta(days=i)).date()
-            daily_groups[day_date.isoformat()] = {"posts": 0, "insta_picks": 0, "label": day_date.strftime("%b %d")}
+    if cycle_id != 'all':
+        # Parse cycle start date
+        try:
+            cycle_start = datetime.strptime(cycle_id, "%Y-%m-%d").date()
+        except ValueError:
+            cycle_start = now.date()
+            
+        # Determine the earliest date from either the cycle start or the earliest upload in this cycle
+        earliest_date = cycle_start
+        for u in uploads:
+            sub_time = parse_date(u.get("submitted_at"))
+            if sub_time:
+                sub_date = sub_time.date()
+                if sub_date < earliest_date:
+                    earliest_date = sub_date
+                    
+        # End date of the cycle is start + 31 days
+        cycle_end = cycle_start + timedelta(days=31)
+        
+        if now.date() < cycle_start:
+            # We are before the cycle start, so show from the earliest upload up to today
+            end_date = now.date()
+        elif now.date() <= cycle_end:
+            # We are within the active cycle, so show from start_date up to today
+            end_date = now.date()
+        else:
+            # Cycle is in the past, show the full range
+            end_date = cycle_end
+            
+        # Avoid huge ranges if there's any anomaly
+        start_date = earliest_date
+        if (end_date - start_date).days > 60:
+            start_date = end_date - timedelta(days=30)
+            
+        curr = start_date
+        while curr <= end_date:
+            daily_groups[curr.isoformat()] = {"posts": 0, "insta_picks": 0, "label": curr.strftime("%b %d")}
+            curr += timedelta(days=1)
+    else:
+        # If 'all', default to last N days
+        if delta_days is not None:
+            for i in range(delta_days - 1, -1, -1):
+                day_date = (now - timedelta(days=i)).date()
+                daily_groups[day_date.isoformat()] = {"posts": 0, "insta_picks": 0, "label": day_date.strftime("%b %d")}
 
     for u in filtered_uploads:
         sub_time = parse_date(u.get("submitted_at"))
         if sub_time:
             day_str = sub_time.date().isoformat()
             if day_str not in daily_groups:
-                if delta_days is None:
+                if cycle_id == 'all' and delta_days is None:
                     daily_groups[day_str] = {"posts": 0, "insta_picks": 0, "label": sub_time.strftime("%b %d")}
                 else:
                     continue
@@ -853,14 +990,24 @@ def get_aggregated_stats(cycle_id='all', timeframe='30days'):
 
     return {
         "total_students": total_students,
+        "total_students_sap": len(sap_students),
+        "total_students_normal": len(normal_students),
         "college_breakdown": college_breakdown,
         "active_members_last_month": active_members_last_month,
+        "active_sap_last_month": len(active_last_month_ids.intersection(sap_student_ids)),
+        "active_normal_last_month": len(active_last_month_ids.intersection(normal_student_ids)),
         "posts_last_week": posts_last_week,
         "insta_picks_last_week": insta_last_week,
         "timeframe_stats": {
             "posts_count": posts_in_period,
+            "posts_count_sap": sum(1 for u in filtered_uploads if str(u.get("student_id")) in sap_student_ids),
+            "posts_count_normal": sum(1 for u in filtered_uploads if str(u.get("student_id")) in normal_student_ids),
             "insta_picks_count": insta_picks_in_period,
-            "active_members_count": len(active_student_ids)
+            "insta_picks_count_sap": sum(1 for u in filtered_uploads if str(u.get("student_id")) in sap_student_ids and u.get("is_insta_pick", False)),
+            "insta_picks_count_normal": sum(1 for u in filtered_uploads if str(u.get("student_id")) in normal_student_ids and u.get("is_insta_pick", False)),
+            "active_members_count": len(active_student_ids),
+            "active_members_count_sap": len(active_student_ids.intersection(sap_student_ids)),
+            "active_members_count_normal": len(active_student_ids.intersection(normal_student_ids))
         },
         "chart_data": chart_data
     }
@@ -1138,7 +1285,8 @@ def admin_student_uploads(current_user, student_id):
             "manual_bonus": manual_bonus,
             "custom_badge": custom_badge,
             "rank": rank,
-            "title": title
+            "title": title,
+            "is_sap_member": student.get("is_sap_member", False)
         },
         "uploads": uploads
     }), 200
@@ -1449,7 +1597,7 @@ def admin_create_poll(current_user):
             else:
                 image_url = p.get('image_url', '')
         elif p.get('type') == 'meme':
-            image_url = p.get('image_meme_url', '')
+            image_url = p.get('image_meme_url') or p.get('image_url', '')
             
         options.append({
             "upload_id": str(p['_id']),

@@ -3,7 +3,7 @@ import { api } from './api';
 import { 
   Plus, Calendar, Award, Trophy, User, LogOut, CheckCircle, 
   Clock, Image, Eye, Edit3, ShieldAlert, Search, Star, Download,
-  Palette, Sparkles
+  Palette, Sparkles, Upload
 } from 'lucide-react';
 import logoImg from './assets/logo.png';
 
@@ -36,6 +36,8 @@ export default function App() {
   const [regPassword, setRegPassword] = useState('');
   const [regCollege, setRegCollege] = useState('');
   const [regYear, setRegYear] = useState('');
+  const [isSapMember, setIsSapMember] = useState(false);
+  const [sapSecretKey, setSapSecretKey] = useState('');
   
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -44,6 +46,7 @@ export default function App() {
   // Topics and Leaderboard data
   const [topics, setTopics] = useState([]);
   const [leaderboard, setLeaderboard] = useState([]);
+  const [leaderboardFilter, setLeaderboardFilter] = useState('all'); // 'all' | 'normal' | 'sap'
   
   // Student Dash metrics
   const [studentMetrics, setStudentMetrics] = useState({ total_posts: 0, total_points: 0, rank: 0, title: 'CLUB MEMBER', badges: [] });
@@ -79,6 +82,47 @@ export default function App() {
       return CYCLES[0].id;
     }
     return CYCLES[CYCLES.length - 1].id;
+  };
+
+  const renderAvatar = (student, classes = "w-8 h-8", forceSquare = false) => {
+    if (!student) return null;
+    const pic = student.profile_pic;
+    const isRound = !forceSquare && !classes.includes("rounded-lg");
+    const roundedClass = isRound ? "rounded-full" : "rounded-lg";
+    
+    if (pic && pic.startsWith("preset_")) {
+      const preset = pic.replace("preset_", "");
+      const presetEmojis = {
+        cowboy: "🤠",
+        frog: "🐸",
+        king: "👑",
+        warrior: "🛡️",
+        hat: "👒",
+        wizard: "🧙",
+        ninja: "🥷",
+        robot: "🤖"
+      };
+      return (
+        <div className={`${classes.replace(/rounded-full/g, "").replace(/rounded-lg/g, "")} ${roundedClass} bg-zinc-900 border border-zinc-800 flex items-center justify-center text-lg select-none`}>
+          {presetEmojis[preset] || "👤"}
+        </div>
+      );
+    } else if (pic) {
+      return (
+        <img 
+          src={api.getImageUrl(`/uploads/${pic}`)} 
+          alt={student.name}
+          className={`${classes.replace(/rounded-full/g, "").replace(/rounded-lg/g, "")} ${roundedClass} object-cover border border-zinc-800`}
+        />
+      );
+    } else {
+      const initials = student.name ? student.name.substring(0, 2).toUpperCase() : "?";
+      return (
+        <div className={`${classes.replace(/rounded-full/g, "").replace(/rounded-lg/g, "")} ${roundedClass} bg-zinc-900 border border-zinc-800 text-zinc-400 flex items-center justify-center font-bold text-[10px] font-mono select-none`}>
+          {initials}
+        </div>
+      );
+    }
   };
 
   const [selectedCycle, setSelectedCycle] = useState(getDefaultCycle());
@@ -214,12 +258,26 @@ export default function App() {
   const [leaderboardSearch, setLeaderboardSearch] = useState('');
   const [uploadsFilter, setUploadsFilter] = useState('all'); 
   const [uploadsSearch, setUploadsSearch] = useState('');
+  const [showLeaderboardModal, setShowLeaderboardModal] = useState(false);
   
   // Topic admin
   const [editingTopic, setEditingTopic] = useState(null);
   const [editedTopicTitle, setEditedTopicTitle] = useState('');
   const [editedTopicDesc, setEditedTopicDesc] = useState('');
   const [editedTopicDate, setEditedTopicDate] = useState('');
+
+  // SAP membership and rankings helper derivations
+  const isSap = user && user.is_sap_member;
+  const sapLeaderboard = user ? leaderboard.filter(s => s.is_sap_member) : [];
+  const sapIndex = user ? sapLeaderboard.findIndex(s => s.id === user.id) : -1;
+  const sapRank = sapIndex !== -1 ? sapIndex + 1 : '-';
+
+  const normalLeaderboard = user ? leaderboard.filter(s => !s.is_sap_member) : [];
+  const normalIndex = user ? normalLeaderboard.findIndex(s => s.id === user.id) : -1;
+  const normalRank = normalIndex !== -1 ? normalIndex + 1 : '-';
+
+  const overallIndex = user ? leaderboard.findIndex(s => s.id === user.id) : -1;
+  const overallRank = overallIndex !== -1 ? overallIndex + 1 : '-';
 
   // Auto Logout decorator check
   const checkResponseError = (res) => {
@@ -292,8 +350,10 @@ export default function App() {
 
   useEffect(() => {
     if (user && user.role === 'student' && topics && topics.length > 0) {
-      const currentDayNum = getCurrentDayNumber(selectedCycle);
-      const todayTopic = topics.find(t => t.day === currentDayNum && t.announced);
+      const announcedTopics = topics.filter(t => t.announced);
+      const todayTopic = announcedTopics.length > 0 
+        ? announcedTopics.reduce((max, t) => t.day > max.day ? t : max, announcedTopics[0])
+        : null;
       
       if (todayTopic) {
         setActiveTodayTopic(todayTopic);
@@ -310,7 +370,13 @@ export default function App() {
             pType = 'updated';
             prevT = { title: todayTopic.prev_title, desc: todayTopic.prev_desc };
           } else {
-            pType = 'new';
+            const prevDay = todayTopic.day - 1;
+            const completedPrev = studentUploads.some(u => Number(u.day_number) === Number(prevDay));
+            if (prevDay >= 1 && !completedPrev) {
+              pType = 'missed_previous';
+            } else {
+              pType = 'new';
+            }
           }
         } else {
           try {
@@ -330,7 +396,13 @@ export default function App() {
                 pType = 'updated';
                 prevT = { title: todayTopic.prev_title, desc: todayTopic.prev_desc };
               } else {
-                pType = 'new';
+                const prevDay = todayTopic.day - 1;
+                const completedPrev = studentUploads.some(u => Number(u.day_number) === Number(prevDay));
+                if (prevDay >= 1 && !completedPrev) {
+                  pType = 'missed_previous';
+                } else {
+                  pType = 'new';
+                }
               }
             }
           }
@@ -346,7 +418,7 @@ export default function App() {
         setShowTaskPopup(false);
       }
     }
-  }, [topics, selectedCycle, user?.role]);
+  }, [topics, selectedCycle, user?.role, studentUploads]);
 
   const loadDashboardData = async (cycle = selectedCycle) => {
     setLoading(true);
@@ -484,7 +556,9 @@ export default function App() {
       password: regPassword,
       college_name: regCollege,
       passout_year: regYear,
-      role: 'student'
+      role: 'student',
+      is_sap_member: isSapMember,
+      sap_secret_key: sapSecretKey
     };
 
     try {
@@ -503,6 +577,8 @@ export default function App() {
         setRegPassword('');
         setRegCollege('');
         setRegYear('');
+        setIsSapMember(false);
+        setSapSecretKey('');
       }
     } catch (err) {
       setErrorMsg("Unable to connect to the backend server.");
@@ -521,6 +597,75 @@ export default function App() {
     setUploadModalOpen(false);
     setZoomedImage(null);
     setSelectedStudentDetail(null);
+  };
+
+  const handleProfilePicUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const inputElement = e.target;
+    setErrorMsg('');
+    setSuccessMsg('');
+    
+    // Check size limit: 5MB
+    if (file.size > 5 * 1024 * 1024) {
+      setErrorMsg("File size exceeds 5MB limit!");
+      inputElement.value = '';
+      return;
+    }
+    
+    setLoading(true);
+    const formData = new FormData();
+    formData.append('profile_pic', file);
+    
+    try {
+      const res = await api.uploadProfilePic(formData);
+      if (res.error) {
+        setErrorMsg(res.error);
+      } else {
+        setSuccessMsg("Profile picture updated successfully!");
+        const updatedUser = { ...user, profile_pic: res.profile_pic };
+        setUser(updatedUser);
+        localStorage.setItem('user', JSON.stringify(updatedUser));
+        
+        const leaderRes = await api.getLeaderboard(selectedCycle);
+        if (leaderRes && !leaderRes.error) {
+          setLeaderboard(leaderRes);
+        }
+      }
+    } catch (err) {
+      setErrorMsg("Failed to upload profile picture.");
+    } finally {
+      setLoading(false);
+      inputElement.value = '';
+    }
+  };
+
+  const handleSelectPreset = async (presetName) => {
+    setErrorMsg('');
+    setSuccessMsg('');
+    setLoading(true);
+    
+    try {
+      const res = await api.uploadProfilePic({ preset: presetName });
+      if (res.error) {
+        setErrorMsg(res.error);
+      } else {
+        setSuccessMsg("Profile avatar preset updated!");
+        const updatedUser = { ...user, profile_pic: res.profile_pic };
+        setUser(updatedUser);
+        localStorage.setItem('user', JSON.stringify(updatedUser));
+        
+        const leaderRes = await api.getLeaderboard(selectedCycle);
+        if (leaderRes && !leaderRes.error) {
+          setLeaderboard(leaderRes);
+        }
+      }
+    } catch (err) {
+      setErrorMsg("Failed to update avatar preset.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleFileChange = (e) => {
@@ -1087,6 +1232,36 @@ export default function App() {
                 </select>
               </div>
 
+              {/* SAP Member Checkbox & Key */}
+              <div className="flex flex-col gap-3 pt-3 border-t border-zinc-100">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input 
+                    type="checkbox"
+                    checked={isSapMember}
+                    onChange={(e) => {
+                      setIsSapMember(e.target.checked);
+                      if (!e.target.checked) setSapSecretKey('');
+                    }}
+                    className="rounded border-zinc-350 text-black focus:ring-black h-4 w-4"
+                  />
+                  <span className="text-[10px] font-bold font-mono text-zinc-500 uppercase tracking-wider">Are you an SAP Member?</span>
+                </label>
+                
+                {isSapMember && (
+                  <div className="space-y-1.5 transition-all duration-200">
+                    <label className="block text-[10px] font-bold font-mono text-zinc-450 uppercase tracking-widest">SAP Secret Key</label>
+                    <input 
+                      type="text"
+                      value={sapSecretKey}
+                      onChange={(e) => setSapSecretKey(e.target.value)}
+                      className="w-full premium-input font-mono"
+                      placeholder="e.g. CCH-001"
+                      required={isSapMember}
+                    />
+                  </div>
+                )}
+              </div>
+
               <button 
                 type="submit" 
                 disabled={loading}
@@ -1217,9 +1392,35 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-5">
+            {user && user.role === 'student' && (
+              <button 
+                onClick={() => setShowLeaderboardModal(true)}
+                className={isSap 
+                  ? "flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-bold uppercase rounded-lg border border-amber-500/40 bg-zinc-950 text-amber-450 hover:bg-zinc-900 shadow-sm cursor-pointer transition-all active:scale-95"
+                  : "flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-bold uppercase rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100/70 shadow-xs cursor-pointer transition-all active:scale-95"}
+              >
+                <Trophy className="w-3.5 h-3.5 text-amber-500" />
+                <span className={isSap ? "text-amber-400" : "text-indigo-700"}>Leaderboard</span>
+              </button>
+            )}
+
             <div className="hidden sm:flex items-center gap-2 font-mono text-xs text-zinc-500">
-              <User className="w-3.5 h-3.5 text-black" />
-              <span>{user.name} ({user.role === 'leader' ? 'Coordinator' : 'Student'})</span>
+              {user && user.role === 'student' ? (
+                <div 
+                  onClick={() => document.getElementById('profile-customizer-card')?.scrollIntoView({ behavior: 'smooth' })}
+                  className="flex items-center gap-2.5 cursor-pointer group"
+                  title="Customize profile on dashboard below"
+                >
+                  {renderAvatar(user, "w-7 h-7 ring-1 ring-zinc-200 group-hover:ring-black transition-all", isSap)}
+                  <span className="group-hover:text-black transition-colors">{user.name} ({isSap ? 'SAP Member' : 'Student'})</span>
+                  <span className="text-[8px] text-zinc-400 group-hover:text-zinc-600 uppercase tracking-tight">(Edit avatar below)</span>
+                </div>
+              ) : (
+                <>
+                  <User className="w-3.5 h-3.5 text-black" />
+                  <span>{user.name} ({user.role === 'leader' ? 'Coordinator' : 'Student'})</span>
+                </>
+              )}
             </div>
 
             <button 
@@ -1262,107 +1463,145 @@ export default function App() {
         {user.role === 'student' && (
           <div className="space-y-8">
             
-            {/* Header banner */}
-            <div className="premium-card p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-              <div>
-                <span className="text-[9px] font-bold font-mono tracking-widest bg-zinc-100 text-black px-2 py-0.5 rounded uppercase">
-                  Active Cycle: {CYCLES.find(c => c.id === selectedCycle)?.name || selectedCycle}
-                </span>
-                <h2 className="text-xl font-extrabold tracking-tight text-zinc-900 mt-2 uppercase font-sans">student dashboard</h2>
-                <p className="text-xs text-zinc-500 font-light mt-0.5">Participate daily to earn leaderboard points and win showcase trophies.</p>
-              </div>
-              <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-end">
-                <div>
-                  <label className="block text-[8px] font-bold font-mono text-zinc-400 uppercase tracking-widest mb-1.5">Select Cycle</label>
-                  <select
-                    value={selectedCycle}
-                    onChange={(e) => setSelectedCycle(e.target.value)}
-                    className="bg-zinc-50 border border-zinc-200 text-xs text-black font-mono font-bold px-3 rounded-lg focus:outline-none focus:border-black cursor-pointer h-[38px] flex items-center"
-                  >
-                    {CYCLES.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+             {/* Header banner */}
+             {isSap ? (
+                <div className="premium-card bg-zinc-900 border border-amber-500/40 text-amber-50 shadow-md shadow-amber-500/5 p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 animate-fade-in">
+                  <div>
+                    <span className="text-[9px] font-bold font-mono tracking-widest bg-amber-500 text-black px-2 py-0.5 rounded uppercase">
+                      Active Cycle: {CYCLES.find(c => c.id === selectedCycle)?.name || selectedCycle}
+                    </span>
+                    <h2 className="text-xl font-extrabold tracking-tight text-amber-400 mt-2 uppercase font-sans flex items-center gap-2">
+                      <span>★</span> SAP Member Dashboard <span>★</span>
+                    </h2>
+                    <p className="text-xs text-zinc-450 font-light mt-0.5">Welcome to your exclusive elite workspace. Compete in the SAP ranking pool.</p>
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-end">
+                    <div>
+                      <label className="block text-[8px] font-bold font-mono text-zinc-500 uppercase tracking-widest mb-1.5">Select Cycle</label>
+                      <select
+                        value={selectedCycle}
+                        onChange={(e) => setSelectedCycle(e.target.value)}
+                        className="bg-zinc-950 border border-zinc-800 text-xs text-amber-400 font-mono font-bold px-3 rounded-lg focus:outline-none focus:border-amber-400 cursor-pointer h-[38px] flex items-center"
+                      >
+                        {CYCLES.map(c => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <span className="px-4 bg-amber-500 text-black text-xs font-mono font-bold uppercase rounded-lg text-center select-none shrink-0 h-[38px] flex items-center justify-center shadow-lg shadow-amber-500/20">SAP Portal</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="premium-card p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                  <div>
+                    <span className="text-[9px] font-bold font-mono tracking-widest bg-zinc-100 text-black px-2 py-0.5 rounded uppercase">
+                      Active Cycle: {CYCLES.find(c => c.id === selectedCycle)?.name || selectedCycle}
+                    </span>
+                    <h2 className="text-xl font-extrabold tracking-tight text-zinc-900 mt-2 uppercase font-sans">student dashboard</h2>
+                    <p className="text-xs text-zinc-500 font-light mt-0.5">Participate daily to earn leaderboard points and win showcase trophies.</p>
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-end">
+                    <div>
+                      <label className="block text-[8px] font-bold font-mono text-zinc-400 uppercase tracking-widest mb-1.5">Select Cycle</label>
+                      <select
+                        value={selectedCycle}
+                        onChange={(e) => setSelectedCycle(e.target.value)}
+                        className="bg-zinc-50 border border-zinc-200 text-xs text-black font-mono font-bold px-3 rounded-lg focus:outline-none focus:border-black cursor-pointer h-[38px] flex items-center"
+                      >
+                        {CYCLES.map(c => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <span className="px-4 bg-black text-white text-xs font-mono font-bold uppercase rounded-lg text-center select-none shrink-0 h-[38px] flex items-center justify-center">Student Portal</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Metrics Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                
+                {/* Metric 1: Title */}
+                <div className={isSap ? "bg-gradient-to-br from-zinc-950 via-zinc-900 to-amber-950/20 border border-amber-500/30 rounded-2xl p-5 hover:border-amber-400 transition-all duration-300 transform hover:-translate-y-1" : "bg-gradient-to-br from-violet-50 via-purple-50/70 to-pink-50/30 border border-violet-100 hover:border-violet-300 hover:shadow-lg hover:shadow-purple-100/50 rounded-2xl p-5 transition-all duration-300 transform hover:-translate-y-1"}>
+                  <div className="flex items-center justify-between">
+                    <p className={isSap ? "text-[10px] font-bold font-mono tracking-widest text-amber-500 uppercase" : "text-[10px] font-bold font-mono tracking-widest text-violet-700 uppercase"}>Current title</p>
+                    <div className={isSap ? "p-2 bg-amber-500/10 rounded-xl text-amber-500" : "p-2 bg-violet-100 rounded-xl text-violet-600"}>
+                      <Award className="w-5 h-5" />
+                    </div>
+                  </div>
+                  <h3 className={isSap ? "text-md font-bold tracking-tight text-amber-200 mt-2 font-sans truncate uppercase" : "text-md font-bold tracking-tight text-violet-950 mt-2 font-sans truncate uppercase"}>{studentMetrics.title}</h3>
+                  <div className="flex flex-wrap gap-1 mt-3">
+                    {studentMetrics.badges.map((b, i) => (
+                      <span key={i} className={isSap ? "text-[9px] font-mono bg-amber-500 text-black px-2 py-0.5 font-bold tracking-wide rounded-md" : "text-[9px] font-mono bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-2 py-0.5 font-bold tracking-wide rounded-md shadow-xs"}>{b}</span>
                     ))}
-                  </select>
-                </div>
-                <span className="px-4 bg-black text-white text-xs font-mono font-bold uppercase rounded-lg text-center select-none shrink-0 h-[38px] flex items-center justify-center">Student Portal</span>
-              </div>
-            </div>
-
-            {/* Metrics Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-              
-              <div className="bg-gradient-to-br from-violet-50 via-purple-50/70 to-pink-50/30 border border-violet-100 hover:border-violet-300 hover:shadow-lg hover:shadow-purple-100/50 rounded-2xl p-5 transition-all duration-300 transform hover:-translate-y-1">
-                <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-bold font-mono tracking-widest text-violet-700 uppercase">Current title</p>
-                  <div className="p-2 bg-violet-100 rounded-xl text-violet-600">
-                    <Award className="w-5 h-5" />
+                    {studentMetrics.badges.length === 0 && (
+                      <span className="text-[9px] font-mono text-zinc-500">No custom awards yet</span>
+                    )}
                   </div>
                 </div>
-                <h3 className="text-md font-bold tracking-tight text-violet-950 mt-2 font-sans truncate uppercase">{studentMetrics.title}</h3>
-                <div className="flex flex-wrap gap-1 mt-3">
-                  {studentMetrics.badges.map((b, i) => (
-                    <span key={i} className="text-[9px] font-mono bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-2 py-0.5 font-bold tracking-wide rounded-md shadow-xs">{b}</span>
-                  ))}
-                  {studentMetrics.badges.length === 0 && (
-                    <span className="text-[9px] font-mono text-violet-400">No custom awards yet</span>
-                  )}
-                </div>
-              </div>
 
-              <div className="bg-gradient-to-br from-emerald-50 via-teal-50/70 to-cyan-50/30 border border-emerald-100 hover:border-emerald-300 hover:shadow-lg hover:shadow-emerald-100/50 rounded-2xl p-5 transition-all duration-300 transform hover:-translate-y-1">
-                <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-bold font-mono tracking-widest text-emerald-700 uppercase">Club Points</p>
-                  <div className="p-2 bg-emerald-100 rounded-xl text-emerald-600">
-                    <Trophy className="w-5 h-5" />
+                {/* Metric 2: Points */}
+                <div className={isSap ? "bg-gradient-to-br from-zinc-950 via-zinc-900 to-amber-950/20 border border-amber-500/30 rounded-2xl p-5 hover:border-amber-400 transition-all duration-300 transform hover:-translate-y-1" : "bg-gradient-to-br from-emerald-50 via-teal-50/70 to-cyan-50/30 border border-emerald-100 hover:border-emerald-300 hover:shadow-lg hover:shadow-emerald-100/50 rounded-2xl p-5 transition-all duration-300 transform hover:-translate-y-1"}>
+                  <div className="flex items-center justify-between">
+                    <p className={isSap ? "text-[10px] font-bold font-mono tracking-widest text-amber-500 uppercase" : "text-[10px] font-bold font-mono tracking-widest text-emerald-700 uppercase"}>Club Points</p>
+                    <div className={isSap ? "p-2 bg-amber-500/10 rounded-xl text-amber-500" : "p-2 bg-emerald-100 rounded-xl text-emerald-600"}>
+                      <Trophy className="w-5 h-5" />
+                    </div>
+                  </div>
+                  <div className="flex items-baseline gap-1 mt-2">
+                    <h3 className={isSap ? "text-3xl font-black tracking-tight text-amber-200 font-mono" : "text-3xl font-black tracking-tight text-emerald-950 font-mono"}>{studentMetrics.total_points}</h3>
+                    <span className={isSap ? "text-xs text-amber-500 font-mono font-bold" : "text-xs text-emerald-650 font-mono font-bold"}>pts</span>
+                  </div>
+                  <div className={isSap ? "text-[10px] font-mono text-zinc-500 mt-3 flex items-center justify-between border-t border-zinc-800 pt-2" : "text-[10px] font-mono text-emerald-650/80 mt-3 flex items-center justify-between border-t border-emerald-100/50 pt-2"}>
+                    <span>Critique: <strong className={isSap ? "text-amber-400" : "text-emerald-900"}>+{studentMetrics.feedback_points}</strong></span>
+                    <span>Extra: <strong className={isSap ? "text-amber-400" : "text-emerald-900"}>+{studentMetrics.manual_bonus}</strong></span>
                   </div>
                 </div>
-                <div className="flex items-baseline gap-1 mt-2">
-                  <h3 className="text-3xl font-black tracking-tight text-emerald-950 font-mono">{studentMetrics.total_points}</h3>
-                  <span className="text-xs text-emerald-650 font-mono font-bold">pts</span>
-                </div>
-                <div className="text-[10px] font-mono text-emerald-600/80 mt-3 flex items-center justify-between border-t border-emerald-100/50 pt-2">
-                  <span>Critique: <strong className="text-emerald-900">+{studentMetrics.feedback_points}</strong></span>
-                  <span>Extra: <strong className="text-emerald-900">+{studentMetrics.manual_bonus}</strong></span>
-                </div>
-              </div>
 
-              <div className="bg-gradient-to-br from-blue-50 via-sky-50/70 to-indigo-50/30 border border-blue-100 hover:border-blue-300 hover:shadow-lg hover:shadow-blue-100/50 rounded-2xl p-5 transition-all duration-300 transform hover:-translate-y-1">
-                <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-bold font-mono tracking-widest text-blue-700 uppercase">Days Submitted</p>
-                  <div className="p-2 bg-blue-100 rounded-xl text-blue-600">
-                    <Calendar className="w-5 h-5" />
+                {/* Metric 3: Submissions */}
+                <div className={isSap ? "bg-gradient-to-br from-zinc-950 via-zinc-900 to-amber-950/20 border border-amber-500/30 rounded-2xl p-5 hover:border-amber-400 transition-all duration-300 transform hover:-translate-y-1" : "bg-gradient-to-br from-blue-50 via-sky-50/70 to-indigo-50/30 border border-blue-100 hover:border-blue-300 hover:shadow-lg hover:shadow-blue-100/50 rounded-2xl p-5 transition-all duration-300 transform hover:-translate-y-1"}>
+                  <div className="flex items-center justify-between">
+                    <p className={isSap ? "text-[10px] font-bold font-mono tracking-widest text-amber-500 uppercase" : "text-[10px] font-bold font-mono tracking-widest text-blue-700 uppercase"}>Days Submitted</p>
+                    <div className={isSap ? "p-2 bg-amber-500/10 rounded-xl text-amber-500" : "p-2 bg-blue-100 rounded-xl text-blue-600"}>
+                      <Calendar className="w-5 h-5" />
+                    </div>
+                  </div>
+                  <div className="flex items-baseline gap-1 mt-2">
+                    <h3 className={isSap ? "text-3xl font-black tracking-tight text-amber-200 font-mono" : "text-3xl font-black tracking-tight text-blue-950 font-mono"}>{studentMetrics.total_posts}</h3>
+                    <span className={isSap ? "text-xs text-amber-500 font-mono font-bold" : "text-xs text-blue-650 font-mono font-bold"}>/ {cycleDays.length} days</span>
+                  </div>
+                  <div className={isSap ? "text-[10px] font-mono text-zinc-500 mt-3 border-t border-zinc-800 pt-2" : "text-[10px] font-mono text-blue-600/80 mt-3 border-t border-blue-100/50 pt-2"}>
+                    <span>Daily post progression</span>
                   </div>
                 </div>
-                <div className="flex items-baseline gap-1 mt-2">
-                  <h3 className="text-3xl font-black tracking-tight text-blue-950 font-mono">{studentMetrics.total_posts}</h3>
-                  <span className="text-xs text-blue-650 font-mono font-bold">/ {cycleDays.length} days</span>
-                </div>
-                <div className="text-[10px] font-mono text-blue-600/80 mt-3 border-t border-blue-100/50 pt-2">
-                  <span>Daily post progression</span>
-                </div>
-              </div>
 
-              <div className="bg-gradient-to-br from-amber-50 via-yellow-50/70 to-orange-50/30 border border-amber-100 hover:border-amber-300 hover:shadow-lg hover:shadow-amber-100/50 rounded-2xl p-5 transition-all duration-300 transform hover:-translate-y-1">
-                <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-bold font-mono tracking-widest text-amber-700 uppercase">Club Rank</p>
-                  <div className="p-2 bg-amber-100 rounded-xl text-amber-600">
-                    <Star className="w-5 h-5" />
+                {/* Metric 4: Rank */}
+                <div className={isSap ? "bg-gradient-to-br from-zinc-950 via-zinc-900 to-amber-950/20 border border-amber-500/30 rounded-2xl p-5 hover:border-amber-400 transition-all duration-300 transform hover:-translate-y-1" : "bg-gradient-to-br from-amber-50 via-yellow-50/70 to-orange-50/30 border border-amber-100 hover:border-amber-300 hover:shadow-lg hover:shadow-amber-100/50 rounded-2xl p-5 transition-all duration-300 transform hover:-translate-y-1"}>
+                  <div className="flex items-center justify-between">
+                    <p className={isSap ? "text-[10px] font-bold font-mono tracking-widest text-amber-500 uppercase" : "text-[10px] font-bold font-mono tracking-widest text-amber-750 uppercase"}>Club Rank</p>
+                    <div className={isSap ? "p-2 bg-amber-500/10 rounded-xl text-amber-500" : "p-2 bg-amber-100 rounded-xl text-amber-600"}>
+                      <Star className="w-5 h-5" />
+                    </div>
+                  </div>
+                  <div className="flex items-baseline gap-1 mt-2">
+                    <h3 className={isSap ? "text-3xl font-black tracking-tight text-amber-200 font-mono" : "text-3xl font-black tracking-tight text-amber-950 font-mono"}>
+                      #{isSap ? sapRank : normalRank}
+                    </h3>
+                    <span className="text-[10px] text-zinc-500 font-mono ml-1">
+                      {isSap ? 'SAP rank' : 'Student rank'}
+                    </span>
+                  </div>
+                  <div className={isSap ? "text-[10px] font-mono text-zinc-500 mt-3 border-t border-zinc-800 pt-2 flex justify-between" : "text-[10px] font-mono text-amber-600/80 mt-3 border-t border-amber-100/50 pt-2 flex justify-between"}>
+                    <span>Overall: <strong className={isSap ? "text-amber-400" : "text-black"}>#{overallRank}</strong></span>
+                    <span>Pool: <strong className={isSap ? "text-amber-400" : "text-black"}>{isSap ? sapLeaderboard.length : normalLeaderboard.length}</strong></span>
                   </div>
                 </div>
-                <div className="flex items-baseline gap-1 mt-2">
-                  <h3 className="text-3xl font-black tracking-tight text-amber-950 font-mono">#{studentMetrics.rank || '-'}</h3>
-                  <span className="text-xs text-amber-650 font-mono font-bold">overall</span>
-                </div>
-                <div className="text-[10px] font-mono text-amber-600/80 mt-3 border-t border-amber-100/50 pt-2">
-                  <span>Out of {leaderboard.length} active students</span>
-                </div>
-              </div>
 
-            </div>
+              </div>
 
             {/* Today's Announced Task Panel */}
             {activeTodayTopic && (
-              <div className="premium-card p-6 bg-gradient-to-tr from-yellow-50/20 via-red-50/15 to-purple-50/25 border border-pink-200 shadow-sm">
+              <div className="premium-card p-6 bg-gradient-to-tr from-yellow-50/20 via-red-50/15 to-purple-50/25 border border-pink-200 shadow-sm animate-fade-in">
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                   <div className="flex items-start">
                     <div className="p-3.5 bg-gradient-to-tr from-yellow-500 via-pink-500 to-purple-600 text-white rounded-2xl shadow-md mr-4 shrink-0 flex items-center justify-center select-none animate-pulse">
@@ -1374,7 +1613,7 @@ export default function App() {
                     </div>
                     <div className="space-y-1 min-w-0">
                       <span className="text-[9px] font-bold font-mono tracking-widest bg-gradient-to-r from-pink-500 to-purple-600 text-white px-2 py-0.5 rounded uppercase">
-                        Today's Task • Day {getCurrentDayNumber(selectedCycle)}
+                        Today's Task • Day {activeTodayTopic.day}
                       </span>
                       <h3 className="text-base font-bold text-black font-mono uppercase mt-2">{activeTodayTopic.title}</h3>
                       <p className="text-xs text-zinc-650 font-mono leading-relaxed mt-1 max-w-2xl">{activeTodayTopic.desc}</p>
@@ -1383,21 +1622,23 @@ export default function App() {
                   
                   <div className="shrink-0 font-mono">
                     {(() => {
-                      const currentDayNum = getCurrentDayNumber(selectedCycle);
-                      const state = submissionTracker[currentDayNum];
-                      const isSubmitted = state === 'task' || state === 'meme' || state === 'both';
-                      const dayUpload = studentUploads.find(u => u.day_number === currentDayNum);
+                      const topicDayNum = activeTodayTopic.day;
+                      const dayUpload = studentUploads.find(u => Number(u.day_number) === Number(topicDayNum));
+                      const isSubmitted = !!dayUpload;
 
                       if (isSubmitted) {
                         return (
-                          <div className="flex flex-col items-end gap-2">
-                            <span className="bg-green-150 border border-green-300 text-green-800 text-[10px] font-bold rounded-lg px-3 py-1.5 uppercase tracking-wide">
-                              ✅ Completed
+                          <div className="flex flex-col items-end gap-1 text-right">
+                            <span className="border-2 border-emerald-500 text-emerald-600 bg-emerald-500/10 text-[10px] font-black rounded-md px-3 py-1.5 uppercase tracking-widest shadow-xs select-none animate-stamp origin-center inline-block transform">
+                              ✓ COMPLETED
+                            </span>
+                            <span className="text-[9px] text-zinc-550 font-medium font-sans mt-2 max-w-[200px] leading-tight block">
+                              Your task is completed. Wait until the admin adds a new task.
                             </span>
                             {dayUpload && (
                               <button
                                 onClick={() => setViewingSubmission(dayUpload)}
-                                className="text-[9px] text-indigo-600 hover:text-indigo-850 underline font-bold cursor-pointer transition-colors"
+                                className="text-[9px] text-indigo-600 hover:text-indigo-850 underline font-extrabold cursor-pointer transition-colors mt-1 uppercase"
                               >
                                 View My Submission
                               </button>
@@ -1408,7 +1649,7 @@ export default function App() {
                         return (
                           <button
                             onClick={() => {
-                              setSelectedDayNumber(currentDayNum);
+                              setSelectedDayNumber(topicDayNum);
                               setUploadTopic(activeTodayTopic.title);
                               setUploadType('task');
                               setUploadTool('');
@@ -1569,6 +1810,77 @@ export default function App() {
               </div>
 
             </div>
+
+            {/* Centered Profile Customization Panel */}
+            <div id="profile-customizer-card" className="max-w-xl mx-auto w-full">
+              <div className={isSap ? "bg-zinc-950 border border-amber-500/30 rounded-2xl p-6 shadow-md text-amber-100 flex flex-col justify-between" : "premium-card p-6 flex flex-col justify-between"}>
+                <div>
+                  <div className={isSap ? "mb-6 pb-4 border-b border-zinc-800" : "mb-6 pb-4 border-b border-zinc-200"}>
+                    <h3 className={isSap ? "text-sm font-bold font-mono uppercase tracking-wider text-amber-400" : "text-sm font-bold font-mono uppercase tracking-wider text-black"}>Customize Profile</h3>
+                    <p className={isSap ? "text-xs text-zinc-500 font-light mt-0.5" : "text-xs text-zinc-400 font-light mt-0.5"}>Customize your character or upload an avatar image</p>
+                  </div>
+
+                  <div className="flex flex-col items-center gap-6 py-4">
+                    {/* Active Avatar Viewport */}
+                    <div className="relative group/avatar">
+                      <div className={isSap ? "relative p-1 bg-gradient-to-tr from-amber-600 via-yellow-500 to-amber-300 rounded-full shadow-md shadow-amber-500/10" : "relative p-1 bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 rounded-full shadow-md"}>
+                        {renderAvatar(user, isSap ? "w-28 h-28 border-4 border-zinc-950" : "w-28 h-28 border-4 border-white")}
+                      </div>
+                      <label className="absolute inset-0 bg-black/60 opacity-0 group-hover/avatar:opacity-100 rounded-full flex flex-col items-center justify-center text-white text-[9px] font-bold cursor-pointer transition-opacity duration-200">
+                        <Upload className="w-5 h-5 mb-1 text-white" />
+                        <span>CHANGE PIC</span>
+                        <input 
+                          type="file" 
+                          accept="image/*"
+                          onChange={handleProfilePicUpload}
+                          className="hidden" 
+                        />
+                      </label>
+                    </div>
+
+                    <div className="text-center">
+                      <h4 className={isSap ? "text-sm font-bold text-amber-400 font-mono uppercase" : "text-sm font-bold text-black font-mono uppercase"}>{user.name}</h4>
+                      <p className={isSap ? "text-[10px] text-zinc-500 font-mono mt-0.5" : "text-[10px] text-zinc-400 font-mono mt-0.5"}>Max File Size: 5MB</p>
+                    </div>
+
+                    {/* Pre-configured Presets Grid */}
+                    <div className="w-full mt-2">
+                      <label className={isSap ? "block text-[9px] font-bold font-mono text-zinc-500 uppercase tracking-widest mb-3 text-center" : "block text-[9px] font-bold font-mono text-zinc-400 uppercase tracking-widest mb-3 text-center"}>Select Preset Avatar</label>
+                      <div className="grid grid-cols-4 gap-3 max-w-[280px] mx-auto">
+                        {[
+                          { id: 'frog', label: '🐸 Frog', icon: '🐸' },
+                          { id: 'cowboy', label: '🤠 Cowboy', icon: '🤠' },
+                          { id: 'king', label: '👑 King', icon: '👑' },
+                          { id: 'warrior', label: '🛡️ Shield', icon: '🛡️' },
+                          { id: 'hat', label: '👒 Cute Hat', icon: '👒' },
+                          { id: 'wizard', label: '🧙 Wizard', icon: '🧙' },
+                          { id: 'ninja', label: '🥷 Ninja', icon: '🥷' },
+                          { id: 'robot', label: '🤖 Robot', icon: '🤖' },
+                        ].map((preset) => {
+                          const isActive = user.profile_pic === `preset_${preset.id}`;
+                          return (
+                            <button
+                              key={preset.id}
+                              onClick={() => handleSelectPreset(preset.id)}
+                              className={`p-3 rounded-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 ${isActive ? (isSap ? 'bg-amber-500 text-black border-amber-500 shadow-md shadow-amber-500/20' : 'bg-black text-white border-black shadow-md') : (isSap ? 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-amber-500/50' : 'bg-zinc-50 border-zinc-200 text-zinc-650')}`}
+                              title={preset.label}
+                            >
+                              <span className="text-2xl">{preset.icon}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className={isSap ? "mt-6 pt-4 border-t border-zinc-900 text-[10px] font-mono text-zinc-500 text-center" : "mt-6 pt-4 border-t border-zinc-150 text-[10px] font-mono text-zinc-400 text-center"}>
+                  Press select to instantly update or select an image file to upload a custom picture.
+                </div>
+              </div>
+            </div>
+
+
 
             {/* Submission Log */}
             <div className="premium-card p-6">
@@ -1816,60 +2128,75 @@ export default function App() {
                 <div className="premium-card p-6 mb-8">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-zinc-200">
                     <div>
-                      <h3 className="text-sm font-bold font-mono uppercase tracking-wider text-black flex items-center gap-2">
-                        <span>📋</span> Today's Task Completion Tracker (Day {getCurrentDayNumber(selectedCycle)})
-                      </h3>
                       {(() => {
-                        const currentDayNum = getCurrentDayNumber(selectedCycle);
-                        const todayTopic = topics.find(t => t.day === currentDayNum);
-                        if (todayTopic && todayTopic.announced) {
-                          return (
-                            <p className="text-xs text-indigo-650 font-bold mt-1 font-mono">
-                              Active Task: "{todayTopic.title}"
-                            </p>
-                          );
-                        } else {
-                          return (
-                            <p className="text-xs text-zinc-400 font-light mt-0.5">
-                              No task has been announced for today yet. Use the "Daily Tasks Plan" tab to announce it.
-                            </p>
-                          );
-                        }
+                        const announced = topics.filter(t => t.announced);
+                        const latestAnnouncedDay = announced.length > 0 
+                          ? announced.reduce((max, t) => t.day > max.day ? t : max, {day: 0}).day
+                          : 0;
+                        const todayTopic = topics.find(t => t.day === latestAnnouncedDay);
+
+                        return (
+                          <>
+                            <h3 className="text-sm font-bold font-mono uppercase tracking-wider text-black flex items-center gap-2">
+                              <span>📋</span> Today's Task Completion Tracker (Day {latestAnnouncedDay || 1})
+                            </h3>
+                            {todayTopic && todayTopic.announced ? (
+                              <p className="text-xs text-indigo-650 font-bold mt-1 font-mono">
+                                Active Task: "{todayTopic.title}"
+                              </p>
+                            ) : (
+                              <p className="text-xs text-zinc-400 font-light mt-0.5">
+                                No task has been announced yet. Use the "Daily Tasks Plan" tab to announce one.
+                              </p>
+                            )}
+                          </>
+                        );
                       })()}
                     </div>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 max-h-[220px] overflow-y-auto pr-1">
-                    {adminStudents.map((student) => {
-                      const currentDayNum = getCurrentDayNumber(selectedCycle);
-                      const dayUpload = adminUploads.find(u => 
-                        String(u.student_id) === String(student.id) &&
-                        u.day_number === currentDayNum
-                      );
-                      
-                      return (
-                        <div key={student.id} className="bg-zinc-50 border border-zinc-200 p-3 rounded-xl flex items-center justify-between gap-3 font-mono text-[10px] select-none hover:bg-zinc-100/50 transition-colors">
-                          <div className="min-w-0">
-                            <span className="block text-black font-bold truncate uppercase">{student.name}</span>
-                            <span className="block text-zinc-400 truncate text-[9px] uppercase mt-0.5">{student.college_name}</span>
-                          </div>
-                          <div className="shrink-0">
-                            {dayUpload ? (
-                              <button
-                                onClick={() => handleOpenReview(dayUpload)}
-                                className="bg-green-100 hover:bg-green-200 border border-green-300 text-green-800 text-[8px] font-bold rounded-lg px-2 py-1 uppercase tracking-wide cursor-pointer transition-colors"
-                              >
-                                ✅ Submitted
-                              </button>
-                            ) : (
-                              <span className="bg-red-50 border border-red-200 text-red-700 text-[8px] font-bold rounded-lg px-2 py-1 uppercase tracking-wide block">
-                                ❌ Pending
+                    {(() => {
+                      const announced = topics.filter(t => t.announced);
+                      const latestAnnouncedDay = announced.length > 0 
+                        ? announced.reduce((max, t) => t.day > max.day ? t : max, {day: 1}).day
+                        : 1;
+
+                      return adminStudents.map((student) => {
+                        const dayUpload = adminUploads.find(u => 
+                          String(u.student_id) === String(student.id) &&
+                          u.day_number === latestAnnouncedDay
+                        );
+                        
+                        return (
+                          <div key={student.id} className="bg-zinc-50 border border-zinc-200 p-3 rounded-xl flex items-center justify-between gap-3 font-mono text-[10px] select-none hover:bg-zinc-100/50 transition-colors">
+                            <div className="min-w-0">
+                              <span className="block text-black font-bold truncate uppercase flex items-center gap-1.5">
+                                <span className="truncate">{student.name}</span>
+                                {student.is_sap_member && (
+                                  <span className="px-1 py-0.2 text-[7px] bg-amber-500 text-white font-extrabold rounded font-sans tracking-normal uppercase shrink-0">SAP</span>
+                                )}
                               </span>
-                            )}
+                              <span className="block text-zinc-400 truncate text-[9px] uppercase mt-0.5">{student.college_name}</span>
+                            </div>
+                            <div className="shrink-0">
+                              {dayUpload ? (
+                                <button
+                                  onClick={() => handleOpenReview(dayUpload)}
+                                  className="bg-green-100 hover:bg-green-200 border border-green-300 text-green-800 text-[8px] font-bold rounded-lg px-2 py-1 uppercase tracking-wide cursor-pointer transition-colors"
+                                >
+                                  ✅ Submitted
+                                </button>
+                              ) : (
+                                <span className="bg-red-50 border border-red-200 text-red-700 text-[8px] font-bold rounded-lg px-2 py-1 uppercase tracking-wide block text-center">
+                                  ❌ Pending
+                                </span>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      });
+                    })()}
                     {adminStudents.length === 0 && (
                       <div className="col-span-full text-center py-6 text-zinc-450 font-mono text-xs">
                         No registered students found in this cycle.
@@ -1885,15 +2212,39 @@ export default function App() {
                       <h3 className="text-sm font-bold font-mono uppercase tracking-wider text-black">Student Leaderboard Tracker</h3>
                       <p className="text-xs text-zinc-400 font-light mt-0.5">Ranked student index list</p>
                     </div>
-                    <div className="relative">
-                      <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
-                      <input 
-                        type="text"
-                        value={leaderboardSearch}
-                        onChange={(e) => setLeaderboardSearch(e.target.value)}
-                        placeholder="Search name or college..."
-                        className="bg-zinc-50 border border-zinc-200 pl-9 pr-4 py-1.5 text-xs text-black focus:outline-none focus:border-black font-mono rounded-lg w-52"
-                      />
+                    <div className="flex flex-wrap items-center gap-3">
+                      {/* Leaderboard Pool Tabs */}
+                      <div className="border border-zinc-200 bg-zinc-50 p-0.5 flex rounded-lg font-mono text-xs">
+                        <button 
+                          onClick={() => setLeaderboardFilter('all')}
+                          className={`px-3 py-1 text-[10px] uppercase font-bold rounded-md cursor-pointer ${leaderboardFilter === 'all' ? 'bg-black text-white shadow-xs' : 'text-zinc-500 hover:text-black'}`}
+                        >
+                          All
+                        </button>
+                        <button 
+                          onClick={() => setLeaderboardFilter('normal')}
+                          className={`px-3 py-1 text-[10px] uppercase font-bold rounded-md cursor-pointer ${leaderboardFilter === 'normal' ? 'bg-black text-white shadow-xs' : 'text-zinc-500 hover:text-black'}`}
+                        >
+                          Normal
+                        </button>
+                        <button 
+                          onClick={() => setLeaderboardFilter('sap')}
+                          className={`px-3 py-1 text-[10px] uppercase font-bold rounded-md cursor-pointer ${leaderboardFilter === 'sap' ? 'bg-black text-white shadow-xs' : 'text-zinc-500 hover:text-black'}`}
+                        >
+                          SAP
+                        </button>
+                      </div>
+
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                        <input 
+                          type="text"
+                          value={leaderboardSearch}
+                          onChange={(e) => setLeaderboardSearch(e.target.value)}
+                          placeholder="Search name or college..."
+                          className="bg-zinc-50 border border-zinc-200 pl-9 pr-4 py-1.5 text-xs text-black focus:outline-none focus:border-black font-mono rounded-lg w-52"
+                        />
+                      </div>
                     </div>
               </div>
 
@@ -1910,24 +2261,44 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-100">
-                    {leaderboard
-                      .filter(s => 
+                    {(() => {
+                      // 1. Filter by membership status
+                      const membershipFiltered = leaderboard.filter(s => {
+                        if (leaderboardFilter === 'normal') return !s.is_sap_member;
+                        if (leaderboardFilter === 'sap') return s.is_sap_member;
+                        return true;
+                      });
+
+                      // 2. Map dynamic displayRank based on sorted index in filtered view
+                      const rankedList = membershipFiltered.map((student, idx) => ({
+                        ...student,
+                        displayRank: idx + 1
+                      }));
+
+                      // 3. Search filter
+                      const searchFiltered = rankedList.filter(s => 
                         s.name.toLowerCase().includes(leaderboardSearch.toLowerCase()) ||
                         s.college_name.toLowerCase().includes(leaderboardSearch.toLowerCase())
-                      )
-                      .map((student) => {
+                      );
+
+                      return searchFiltered.map((student) => {
                         let rankStyle = "text-zinc-500 font-bold";
-                        if (student.rank === 1) rankStyle = "text-yellow-600 font-extrabold";
-                        else if (student.rank === 2) rankStyle = "text-zinc-650 font-extrabold";
-                        else if (student.rank === 3) rankStyle = "text-amber-700 font-extrabold";
+                        if (student.displayRank === 1) rankStyle = "text-yellow-600 font-extrabold";
+                        else if (student.displayRank === 2) rankStyle = "text-zinc-650 font-extrabold";
+                        else if (student.displayRank === 3) rankStyle = "text-amber-700 font-extrabold";
 
                         return (
                           <tr key={student.id} className="hover:bg-zinc-50 group">
                             <td className={`py-4 px-2 text-center font-mono ${rankStyle}`}>
-                              #{student.rank}
+                              #{student.displayRank}
                             </td>
                             <td className="py-4 px-4 font-sans font-bold text-black">
-                              {student.name}
+                              <div className="flex items-center gap-1.5">
+                                <span>{student.name}</span>
+                                {student.is_sap_member && (
+                                  <span className="px-1.5 py-0.2 text-[8px] bg-amber-500 text-white font-extrabold rounded font-sans tracking-normal uppercase shrink-0">SAP</span>
+                                )}
+                              </div>
                             </td>
                             <td className="py-4 px-4 text-zinc-500">
                               <span className="block text-[11px] truncate max-w-[250px]">{student.college_name}</span>
@@ -1957,7 +2328,8 @@ export default function App() {
                             </td>
                           </tr>
                         );
-                      })}
+                      });
+                    })()}
                   </tbody>
                 </table>
                 
@@ -2075,7 +2447,12 @@ export default function App() {
 
                             <div className="p-4">
                               <div className="flex justify-between items-start text-[10px] font-mono text-zinc-400 mb-1.5">
-                                <span>Day {upload.day_number} | {upload.student_name}</span>
+                                <span className="flex items-center gap-1.5">
+                                  <span>Day {upload.day_number} | {upload.student_name}</span>
+                                  {upload.is_sap_member && (
+                                    <span className="px-1.5 py-0.2 text-[7px] bg-amber-500 text-white font-extrabold rounded font-sans tracking-normal uppercase shrink-0">SAP</span>
+                                  )}
+                                </span>
                                 <span className={`px-2 py-0.2 rounded font-bold uppercase text-[8px] ${upload.type === 'both' ? 'bg-black text-white' : 'bg-zinc-100 text-black border border-zinc-200'}`}>
                                   {upload.type}
                                 </span>
@@ -2095,7 +2472,12 @@ export default function App() {
 
                               <h4 className="text-xs font-bold text-black uppercase truncate mb-1">{upload.topic}</h4>
                               <div className="text-[10px] font-mono mb-3 uppercase">
-                                <div className="text-black font-bold">Uploaded By: {upload.student_name}</div>
+                                <div className="text-black font-bold flex items-center gap-1.5">
+                                  <span>Uploaded By: {upload.student_name}</span>
+                                  {upload.is_sap_member && (
+                                    <span className="px-1.5 py-0.2 text-[7px] bg-amber-500 text-white font-extrabold rounded font-sans tracking-normal uppercase shrink-0">SAP</span>
+                                  )}
+                                </div>
                                 <div className="text-zinc-450 text-[9px] mt-0.5">College: {upload.college_name}</div>
                               </div>
                               
@@ -2554,7 +2936,10 @@ export default function App() {
                       </div>
                     </div>
                     <h3 className="text-3xl font-black tracking-tight text-indigo-950 font-mono mt-2">{adminStats.total_students}</h3>
-                    <span className="text-[10px] font-mono text-indigo-600/80 block mt-3 border-t border-indigo-100/50 pt-2">All time registrations</span>
+                    <div className="text-[10px] font-mono text-zinc-500 mt-3 border-t border-indigo-100/50 pt-2 flex justify-between">
+                      <span>SAP: <strong className="text-black">{adminStats.total_students_sap || 0}</strong></span>
+                      <span>Normal: <strong className="text-black">{adminStats.total_students_normal || 0}</strong></span>
+                    </div>
                   </div>
 
                   {/* Card 2: Active members */}
@@ -2566,7 +2951,10 @@ export default function App() {
                       </div>
                     </div>
                     <h3 className="text-3xl font-black tracking-tight text-emerald-950 font-mono mt-2">{adminStats.active_members_last_month}</h3>
-                    <span className="text-[10px] font-mono text-emerald-600/80 block mt-3 border-t border-emerald-100/50 pt-2">Unique members submitting</span>
+                    <div className="text-[10px] font-mono text-zinc-500 mt-3 border-t border-emerald-100/50 pt-2 flex justify-between">
+                      <span>SAP: <strong className="text-black">{adminStats.active_sap_last_month || 0}</strong></span>
+                      <span>Normal: <strong className="text-black">{adminStats.active_normal_last_month || 0}</strong></span>
+                    </div>
                   </div>
 
                   {/* Card 3: Uploads in timeframe */}
@@ -2578,7 +2966,10 @@ export default function App() {
                       </div>
                     </div>
                     <h3 className="text-3xl font-black tracking-tight text-purple-950 font-mono mt-2">{adminStats.timeframe_stats.posts_count}</h3>
-                    <span className="text-[10px] font-mono text-purple-600/80 block mt-3 border-t border-purple-100/50 pt-2">Total tasks/memes posted</span>
+                    <div className="text-[10px] font-mono text-zinc-500 mt-3 border-t border-purple-100/50 pt-2 flex justify-between">
+                      <span>SAP: <strong className="text-black">{adminStats.timeframe_stats.posts_count_sap || 0}</strong></span>
+                      <span>Normal: <strong className="text-black">{adminStats.timeframe_stats.posts_count_normal || 0}</strong></span>
+                    </div>
                   </div>
 
                   {/* Card 4: Insta Picks in timeframe */}
@@ -2590,7 +2981,10 @@ export default function App() {
                       </div>
                     </div>
                     <h3 className="text-3xl font-black tracking-tight text-pink-950 font-mono mt-2">{adminStats.timeframe_stats.insta_picks_count}</h3>
-                    <span className="text-[10px] font-mono text-pink-600/80 block mt-3 border-t border-pink-100/50 pt-2">Showcase picks selected</span>
+                    <div className="text-[10px] font-mono text-zinc-500 mt-3 border-t border-pink-100/50 pt-2 flex justify-between">
+                      <span>SAP: <strong className="text-black">{adminStats.timeframe_stats.insta_picks_count_sap || 0}</strong></span>
+                      <span>Normal: <strong className="text-black">{adminStats.timeframe_stats.insta_picks_count_normal || 0}</strong></span>
+                    </div>
                   </div>
 
                 </div>
@@ -3371,7 +3765,9 @@ export default function App() {
             </div>
             
             <h2 className="text-lg font-black tracking-tight text-indigo-950 uppercase mt-5 font-mono">
-              {popupType === 'new' ? '📢 New Daily Task Added!' : '🔄 Daily Task Updated by Admin!'}
+              {popupType === 'new' ? '📢 New Daily Task Added!' : 
+               popupType === 'missed_previous' ? '⚠️ Previous Task Missed!' : 
+               '🔄 Daily Task Updated by Admin!'}
             </h2>
             <p className="text-[10px] text-zinc-400 font-mono tracking-wider uppercase mt-1">
               {activeTodayTopic.date ? new Date(activeTodayTopic.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric' }) : ''} • Day {activeTodayTopic.day}
@@ -3383,6 +3779,24 @@ export default function App() {
                 <p className="text-[11px] text-zinc-550 mt-2 font-mono leading-relaxed text-left whitespace-pre-line bg-white p-3 rounded-lg border border-zinc-100 max-h-[140px] overflow-y-auto">
                   {activeTodayTopic.desc}
                 </p>
+              </div>
+            ) : popupType === 'missed_previous' ? (
+              <div className="w-full my-5 space-y-4">
+                <div className="text-left bg-red-50 border border-red-200 p-4 rounded-xl">
+                  <span className="block text-[8.5px] font-bold font-mono text-red-550 uppercase tracking-widest mb-1">Warning</span>
+                  <h4 className="text-[11px] font-black text-red-800 font-mono uppercase">Previous Task Missed!</h4>
+                  <p className="text-[10px] text-red-700 mt-1 font-mono leading-relaxed">
+                    Your previous task (Day {activeTodayTopic.day - 1}) was not submitted! That submission window is now closed. This is your new active task.
+                  </p>
+                </div>
+                
+                <div className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-4 text-left">
+                  <span className="block text-[8px] font-bold font-mono text-zinc-400 uppercase tracking-widest mb-1">New Active Task</span>
+                  <h4 className="text-xs font-bold text-black font-mono uppercase mt-1">{activeTodayTopic.title}</h4>
+                  <p className="text-[11px] text-zinc-550 mt-2 font-mono leading-relaxed bg-white p-3 rounded-lg border border-zinc-100 max-h-[110px] overflow-y-auto whitespace-pre-line">
+                    {activeTodayTopic.desc}
+                  </p>
+                </div>
               </div>
             ) : (
               <div className="w-full my-5 space-y-4">
@@ -3424,7 +3838,9 @@ export default function App() {
               }}
               className="w-full py-3 bg-black hover:bg-zinc-800 text-white rounded-xl text-xs uppercase tracking-wider font-mono font-bold transition-all shadow-md active:scale-98 cursor-pointer"
             >
-              {popupType === 'new' ? 'Start Designing Task! [x]' : 'Accept Updates & Close [x]'}
+              {popupType === 'new' ? 'Start Designing Task! [x]' : 
+               popupType === 'missed_previous' ? 'Acknowledge & Start New Task [x]' : 
+               'Accept Updates & Close [x]'}
             </button>
           </div>
         </div>
@@ -3918,6 +4334,264 @@ export default function App() {
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* 9. RIGHT-ALIGNED LEADERBOARD DRAWER MODAL */}
+      {showLeaderboardModal && (
+        <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-xs animate-fade-in">
+          <div 
+            className={isSap 
+              ? "relative w-full max-w-2xl bg-zinc-950 border-l border-amber-500/40 shadow-2xl p-6 text-amber-100 flex flex-col h-full overflow-y-auto"
+              : "relative w-full max-w-2xl bg-white border-l border-zinc-200 shadow-2xl p-6 text-zinc-900 flex flex-col h-full overflow-y-auto"}
+          >
+            <button 
+              onClick={() => setShowLeaderboardModal(false)}
+              className={isSap 
+                ? "absolute top-4 right-4 text-zinc-400 hover:text-amber-450 font-mono text-2xl cursor-pointer p-2 rounded-lg bg-zinc-900 border border-zinc-800"
+                : "absolute top-4 right-4 text-zinc-450 hover:text-black font-mono text-2xl cursor-pointer p-2 rounded-lg bg-zinc-50 border border-zinc-200"}
+              title="Close"
+            >
+              ×
+            </button>
+
+            <div className={isSap ? "flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-zinc-800 pr-10" : "flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-zinc-200 pr-10"}>
+              <div>
+                <h3 className={isSap ? "text-sm font-bold font-mono uppercase tracking-wider text-amber-400" : "text-sm font-bold font-mono uppercase tracking-wider text-black"}>
+                  {isSap 
+                    ? `★ SAP Leaderboard (${leaderboardFilter}) ★` 
+                    : "Club Leaderboard"}
+                </h3>
+                <p className={isSap ? "text-xs text-amber-500/80 font-mono mt-1" : "text-xs text-zinc-400 font-light mt-0.5"}>
+                  {isSap 
+                    ? `Rankings filtered by ${leaderboardFilter} student pool` 
+                    : "Rankings within normal student pool"}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                {isSap && (
+                  <div className="border border-zinc-800 bg-zinc-900 p-0.5 flex rounded-lg font-mono text-[10px] text-zinc-400">
+                    <button 
+                      onClick={() => setLeaderboardFilter('all')}
+                      className={`px-3 py-1 text-[10px] uppercase font-bold rounded-md cursor-pointer ${leaderboardFilter === 'all' ? 'bg-amber-500 text-black shadow-xs' : 'text-zinc-500 hover:text-amber-400'}`}
+                    >
+                      All
+                    </button>
+                    <button 
+                      onClick={() => setLeaderboardFilter('normal')}
+                      className={`px-3 py-1 text-[10px] uppercase font-bold rounded-md cursor-pointer ${leaderboardFilter === 'normal' ? 'bg-amber-500 text-black shadow-xs' : 'text-zinc-500 hover:text-amber-400'}`}
+                    >
+                      Normal
+                    </button>
+                    <button 
+                      onClick={() => setLeaderboardFilter('sap')}
+                      className={`px-3 py-1 text-[10px] uppercase font-bold rounded-md cursor-pointer ${leaderboardFilter === 'sap' ? 'bg-amber-500 text-black shadow-xs' : 'text-zinc-500 hover:text-amber-400'}`}
+                    >
+                      SAP
+                    </button>
+                  </div>
+                )}
+                
+                <div className="relative">
+                  <Search className={isSap ? "w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-amber-500" : "w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"} />
+                  <input 
+                    type="text"
+                    value={leaderboardSearch}
+                    onChange={(e) => setLeaderboardSearch(e.target.value)}
+                    placeholder="Search name..."
+                    className={isSap ? "bg-zinc-900 border border-zinc-800 pl-9 pr-4 py-1.5 text-xs text-amber-450 focus:outline-none focus:border-amber-500 font-mono rounded-lg w-40" : "bg-zinc-50 border border-zinc-200 pl-9 pr-4 py-1.5 text-xs text-black focus:outline-none focus:border-black font-mono rounded-lg w-40"}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {(() => {
+              // Filter the pool: SAP dashboard shows all/filtered pool, Normal dashboard shows only normal students
+              const poolList = isSap 
+                ? leaderboard.filter(s => {
+                    if (leaderboardFilter === 'normal') return !s.is_sap_member;
+                    if (leaderboardFilter === 'sap') return s.is_sap_member;
+                    return true;
+                  })
+                : leaderboard.filter(s => !s.is_sap_member);
+              const rankedList = poolList.map((student, idx) => ({ ...student, displayRank: idx + 1 }));
+              const searchFiltered = rankedList.filter(s => 
+                s.name.toLowerCase().includes(leaderboardSearch.toLowerCase()) ||
+                s.college_name.toLowerCase().includes(leaderboardSearch.toLowerCase())
+              );
+              const topThree = rankedList.slice(0, 3);
+
+              return (
+                <>
+                  {/* Top 3 Podium */}
+                  {topThree.length > 0 && (
+                    isSap ? (
+                      /* Cyberpunk 3D Podium */
+                      <div className="flex justify-center items-end gap-5 mb-8 mt-2 pb-6 border-b border-zinc-800">
+                        {/* Position 2 */}
+                        {topThree[1] && (
+                          <div className="flex flex-col items-center select-none w-20">
+                            <div className="relative z-10 -mb-2">
+                              <span className="absolute -top-3 left-1/2 -translate-y-1/2 text-xs">🤠</span>
+                              {renderAvatar(topThree[1], "w-11 h-11 border-2 border-zinc-700 bg-zinc-900 shadow-sm", true)}
+                            </div>
+                            <div className="w-16 h-12 bg-gradient-to-b from-zinc-800 to-zinc-950 border-t-2 border-x border-zinc-650 rounded-t-md relative flex flex-col justify-end pb-1.5 items-center shadow-md">
+                              <span className="font-mono text-[9px] font-bold text-zinc-400 z-10">[2]</span>
+                            </div>
+                            <span className="text-[9px] font-mono text-zinc-300 mt-2 truncate max-w-[70px] font-bold text-center block">
+                              {topThree[1].name.toLowerCase().replace(/\s+/g, '_')}
+                            </span>
+                            <span className="text-[8px] font-mono text-zinc-500 text-center block">
+                              {topThree[1].points} pts
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Position 1 */}
+                        {topThree[0] && (
+                          <div className="flex flex-col items-center select-none w-24">
+                            <div className="relative z-10 -mb-2">
+                              <span className="absolute -top-3.5 left-1/2 -translate-y-1/2 text-sm animate-bounce">👑</span>
+                              {renderAvatar(topThree[0], "w-13 h-13 border-2 border-emerald-500 bg-zinc-900 shadow-md shadow-emerald-500/20", true)}
+                            </div>
+                            <div className="w-20 h-16 bg-gradient-to-b from-zinc-850 to-zinc-950 border-t-2 border-x border-emerald-500/60 rounded-t-md relative flex flex-col justify-end pb-2 items-center shadow-md">
+                              <span className="font-mono text-[10px] font-black text-emerald-400 z-10">[1]</span>
+                            </div>
+                            <span className="text-[10px] font-mono text-emerald-300 mt-2 truncate max-w-[85px] font-bold text-center block">
+                              {topThree[0].name.toLowerCase().replace(/\s+/g, '_')}
+                            </span>
+                            <span className="text-[9px] font-mono text-emerald-400 font-extrabold text-center block">
+                              {topThree[0].points} pts
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Position 3 */}
+                        {topThree[2] && (
+                          <div className="flex flex-col items-center select-none w-20">
+                            <div className="relative z-10 -mb-2">
+                              <span className="absolute -top-3 left-1/2 -translate-y-1/2 text-xs">🦊</span>
+                              {renderAvatar(topThree[2], "w-11 h-11 border-2 border-zinc-800 bg-zinc-900 shadow-sm", true)}
+                            </div>
+                            <div className="w-16 h-8 bg-gradient-to-b from-zinc-900 to-zinc-950 border-t-2 border-x border-zinc-750 rounded-t-md relative flex flex-col justify-end pb-1 items-center shadow-md">
+                              <span className="font-mono text-[9px] font-bold text-zinc-500 z-10">[3]</span>
+                            </div>
+                            <span className="text-[9px] font-mono text-zinc-300 mt-2 truncate max-w-[70px] font-bold text-center block">
+                              {topThree[2].name.toLowerCase().replace(/\s+/g, '_')}
+                            </span>
+                            <span className="text-[8px] font-mono text-zinc-500 text-center block">
+                              {topThree[2].points} pts
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      /* Normal Rounded Podium */
+                      <div className="flex justify-center items-end gap-6 mb-8 mt-2 pb-6 border-b border-zinc-150">
+                        {/* Position 2 */}
+                        {topThree[1] && (
+                          <div className="flex flex-col items-center select-none">
+                            <div className="relative">
+                              <span className="absolute -top-3 left-1/2 -translate-y-1/2 text-sm">🤠</span>
+                              {renderAvatar(topThree[1], "w-10 h-10 border-2 border-slate-300 shadow-md")}
+                            </div>
+                            <div className="w-10 h-10 bg-slate-100 border border-slate-200 rotate-45 flex items-center justify-center mt-3.5 rounded-lg shadow-xs">
+                              <span className="-rotate-45 font-mono font-bold text-slate-700 text-xs">2</span>
+                            </div>
+                            <span className="text-[9px] font-bold text-zinc-600 mt-2 truncate max-w-[80px]">{topThree[1].name}</span>
+                            <span className="text-[8px] font-mono text-zinc-400">{topThree[1].points} pts</span>
+                          </div>
+                        )}
+
+                        {/* Position 1 */}
+                        {topThree[0] && (
+                          <div className="flex flex-col items-center select-none">
+                            <div className="relative -top-2">
+                              <span className="absolute -top-4 left-1/2 -translate-y-1/2 text-base animate-bounce">👑</span>
+                              {renderAvatar(topThree[0], "w-14 h-14 border-2 border-amber-400 shadow-lg")}
+                            </div>
+                            <div className="w-12 h-12 bg-amber-100/70 border border-amber-300 rotate-45 flex items-center justify-center mt-3 rounded-lg shadow-md">
+                              <span className="-rotate-45 font-mono font-black text-amber-700 text-sm">1</span>
+                            </div>
+                            <span className="text-[10px] font-black text-black mt-2 truncate max-w-[90px]">{topThree[0].name}</span>
+                            <span className="text-[9px] font-mono text-amber-600 font-bold">{topThree[0].points} pts</span>
+                          </div>
+                        )}
+
+                        {/* Position 3 */}
+                        {topThree[2] && (
+                          <div className="flex flex-col items-center select-none">
+                            <div className="relative">
+                              <span className="absolute -top-3 left-1/2 -translate-y-1/2 text-sm">🦊</span>
+                              {renderAvatar(topThree[2], "w-10 h-10 border-2 border-orange-300 shadow-md")}
+                            </div>
+                            <div className="w-10 h-10 bg-orange-50 border border-orange-200 rotate-45 flex items-center justify-center mt-3.5 rounded-lg shadow-xs">
+                              <span className="-rotate-45 font-mono font-bold text-orange-700 text-xs">3</span>
+                            </div>
+                            <span className="text-[9px] font-bold text-zinc-600 mt-2 truncate max-w-[80px]">{topThree[2].name}</span>
+                            <span className="text-[8px] font-mono text-zinc-400">{topThree[2].points} pts</span>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  )}
+
+                  <div className="overflow-x-auto pr-1">
+                    <table className="w-full text-left font-mono text-xs select-none">
+                      <thead>
+                        <tr className={isSap ? "border-b border-zinc-800 text-amber-50 uppercase text-[10px] font-bold tracking-wider font-mono" : "border-b border-zinc-150 text-zinc-400 uppercase text-[9px] tracking-wider"}>
+                          <th className="py-2 px-2 text-center w-12 font-bold">Rank</th>
+                          <th className="py-2.5 px-4 font-bold">Avatar</th>
+                          <th className="py-2.5 px-4 font-bold">{isSap ? "Player" : "Student Name"}</th>
+                          <th className="py-2.5 px-4 font-bold">College</th>
+                          <th className="py-2.5 px-3 text-center w-20 font-bold">Points</th>
+                        </tr>
+                      </thead>
+                      <tbody className={isSap ? "divide-y divide-zinc-900" : "divide-y divide-zinc-100"}>
+                        {searchFiltered.map((student) => {
+                          let rankStyle = isSap ? "text-amber-600/80 font-mono font-bold" : "text-zinc-500 font-bold";
+                          if (student.displayRank === 1) rankStyle = isSap ? "text-emerald-400 font-black font-mono tracking-tight" : "text-yellow-600 font-extrabold";
+                          else if (student.displayRank === 2) rankStyle = isSap ? "text-zinc-300 font-bold font-mono" : "text-zinc-650 font-extrabold";
+                          else if (student.displayRank === 3) rankStyle = isSap ? "text-amber-650 font-bold font-mono" : "text-amber-700 font-bold";
+
+                          const isCurrentStudent = String(student.id) === String(user.id);
+
+                          return (
+                            <tr key={student.id} className={isCurrentStudent ? (isSap ? 'bg-amber-500/10 font-bold hover:bg-amber-500/15' : 'bg-indigo-50/45 font-bold hover:bg-zinc-50') : (isSap ? 'hover:bg-zinc-900/40 text-zinc-350' : 'hover:bg-zinc-50 text-black')}>
+                              <td className={`py-4 px-2 text-center font-mono ${rankStyle}`}>
+                                {isSap ? `[${student.displayRank}]` : `#${student.displayRank}`}
+                              </td>
+                              <td className="py-4 px-4">
+                                {renderAvatar(student, "w-7 h-7", isSap)}
+                              </td>
+                              <td className={isSap ? "py-4 px-4 font-mono text-xs text-amber-200" : "py-4 px-4 font-sans font-bold text-black"}>
+                                <div className="flex items-center gap-1.5">
+                                  <span>{isSap ? student.name.toLowerCase().replace(/\s+/g, '_') : student.name}</span>
+                                  {student.is_sap_member && (
+                                    <span className="px-1.5 py-0.2 text-[8px] bg-amber-500 text-white font-extrabold rounded font-sans tracking-normal uppercase shrink-0">SAP</span>
+                                  )}
+                                  {isCurrentStudent && (
+                                    <span className={isSap ? "px-1.5 py-0.2 text-[8px] bg-amber-500 text-black font-extrabold rounded font-sans tracking-normal uppercase shrink-0" : "px-1.5 py-0.2 text-[8px] bg-indigo-650 text-white font-extrabold rounded font-sans tracking-normal uppercase shrink-0"}>You</span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className={isSap ? "py-4 px-4 text-zinc-400 font-mono" : "py-4 px-4 text-zinc-500"}>
+                                <span className={isSap ? "block text-[11px] truncate max-w-[150px] text-amber-200/90 font-bold" : "block text-[11px] truncate max-w-[150px]"}>{student.college_name}</span>
+                                <span className={isSap ? "text-[9px] text-zinc-450 font-mono mt-0.5 block" : "text-[9px] text-zinc-500 block"}>Class {student.passout_year}</span>
+                              </td>
+                              <td className={isSap ? "py-4 px-3 text-center font-bold font-mono text-amber-450" : "py-4 px-3 text-center font-bold font-mono text-black"}>
+                                {student.points}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}

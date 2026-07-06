@@ -86,6 +86,16 @@ export const api = {
     return response.json();
   },
 
+  async uploadProfilePic(payload) {
+    const isMultipart = payload instanceof FormData;
+    const response = await fetch(`${API_URL}/student/profile-pic`, {
+      method: 'POST',
+      headers: getHeaders(isMultipart),
+      body: isMultipart ? payload : JSON.stringify(payload),
+    });
+    return response.json();
+  },
+
   // Leaderboard
   async getLeaderboard(cycle = '') {
     const url = cycle ? `${API_URL}/leaderboard?cycle=${cycle}` : `${API_URL}/leaderboard`;

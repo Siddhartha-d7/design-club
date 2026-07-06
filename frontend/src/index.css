@@ -210,3 +210,27 @@
 .animate-fly-drift {
   animation: fly-drift 10s ease-in-out infinite;
 }
+
+@keyframes stamp-slam {
+  0% {
+    opacity: 0;
+    transform: scale(3.5) rotate(-25deg);
+    filter: blur(4px);
+  }
+  70% {
+    opacity: 0.9;
+    transform: scale(0.9) rotate(5deg);
+    filter: blur(0);
+  }
+  85% {
+    transform: scale(1.1) rotate(-3deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(-6deg);
+  }
+}
+
+.animate-stamp {
+  animation: stamp-slam 0.45s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
