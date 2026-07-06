@@ -1255,7 +1255,7 @@ export default function App() {
                       value={sapSecretKey}
                       onChange={(e) => setSapSecretKey(e.target.value)}
                       className="w-full premium-input font-mono"
-                      placeholder="e.g. CCH-001"
+                      placeholder="Enter Secret Key"
                       required={isSapMember}
                     />
                   </div>
