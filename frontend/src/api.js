@@ -232,9 +232,52 @@ export const api = {
     return response.json();
   },
 
+  // SAP Attendance
+  async getAttendance(cycle = '') {
+    const url = cycle ? `${API_URL}/admin/attendance?cycle=${cycle}` : `${API_URL}/admin/attendance`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: getHeaders(),
+    });
+    return response.json();
+  },
+
+  async createAttendanceSession(sessionData) {
+    const response = await fetch(`${API_URL}/admin/attendance`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify(sessionData),
+    });
+    return response.json();
+  },
+
+  async updateAttendance(sessionId, presentStudents) {
+    const response = await fetch(`${API_URL}/admin/attendance/${sessionId}`, {
+      method: 'PUT',
+      headers: getHeaders(),
+      body: JSON.stringify({ present_students: presentStudents }),
+    });
+    return response.json();
+  },
+
+  async deleteAttendanceSession(sessionId) {
+    const response = await fetch(`${API_URL}/admin/attendance/${sessionId}`, {
+      method: 'DELETE',
+      headers: getHeaders(),
+    });
+    return response.json();
+  },
+
   // Helper to format image paths
   getImageUrl(path) {
     if (!path) return '';
+    if (path.includes('data:') || path.startsWith('http://') || path.startsWith('https://')) {
+      if (path.includes('data:')) {
+        const idx = path.indexOf('data:');
+        return path.substring(idx);
+      }
+      return path;
+    }
     const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
     return `${baseUrl}${path}`;
   }

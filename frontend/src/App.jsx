@@ -3,7 +3,7 @@ import { api } from './api';
 import { 
   Plus, Calendar, Award, Trophy, User, LogOut, CheckCircle, 
   Clock, Image, Eye, Edit3, ShieldAlert, Search, Star, Download,
-  Palette, Sparkles, Upload
+  Palette, Sparkles, Upload, Trash2, Check, X, ChevronLeft, Users
 } from 'lucide-react';
 import logoImg from './assets/logo.png';
 
@@ -141,6 +141,15 @@ export default function App() {
   const [emailLoading, setEmailLoading] = useState(false);
   const [emailStatus, setEmailStatus] = useState('');
   const [instaPicks, setInstaPicks] = useState([]);
+  
+  // SAP Attendance States
+  const [attendanceSessions, setAttendanceSessions] = useState([]);
+  const [selectedAttendanceSession, setSelectedAttendanceSession] = useState(null);
+  const [sessionName, setSessionName] = useState('');
+  const [sessionType, setSessionType] = useState('meeting');
+  const [sessionDate, setSessionDate] = useState(new Date().toISOString().split('T')[0]);
+  const [showCreateSession, setShowCreateSession] = useState(false);
+  const [savingAttendance, setSavingAttendance] = useState(false);
 
   const [adminPolls, setAdminPolls] = useState([]);
   const [activePollAdmin, setActivePollAdmin] = useState(null);
@@ -282,7 +291,7 @@ export default function App() {
   // Auto Logout decorator check
   const checkResponseError = (res) => {
     if (res && res.error) {
-      if (res.error.includes('expired') || res.error.includes('token') || res.error.includes('Authentication')) {
+      if (res.error.includes('expired') || res.error.includes('token') || res.error.includes('Authentication') || res.error.includes('User not found')) {
         handleLogout();
       }
       setErrorMsg(res.error);
@@ -420,6 +429,24 @@ export default function App() {
     }
   }, [topics, selectedCycle, user?.role, studentUploads]);
 
+  const loadAttendanceData = async (cycle = selectedCycle) => {
+    try {
+      const attRes = await api.getAttendance(cycle);
+      if (attRes && !attRes.error) {
+        setAttendanceSessions(attRes);
+        // If a session is currently selected, update its reference from the reloaded list
+        if (selectedAttendanceSession) {
+          const updated = attRes.find(s => String(s._id) === String(selectedAttendanceSession._id));
+          if (updated) {
+            setSelectedAttendanceSession(updated);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Error loading attendance:", err);
+    }
+  };
+
   const loadDashboardData = async (cycle = selectedCycle) => {
     setLoading(true);
     setErrorMsg('');
@@ -471,6 +498,9 @@ export default function App() {
           const active = pollsRes.find(p => p.status === 'active');
           setActivePollAdmin(active || null);
         }
+        
+        // Load SAP Attendance Sessions
+        await loadAttendanceData(cycle);
       }
     } catch (e) {
       setErrorMsg("Failed to connect to the server. Make sure the Flask backend is active.");
@@ -715,6 +745,26 @@ export default function App() {
     if (uploadType === 'both' && !uploadMemeFile) {
       setErrorMsg("Please select both a design task image and a meme graphic image.");
       return;
+    }
+
+    // File size validations to prevent MongoDB BSON size overflow
+    const MAX_SINGLE_SIZE = 8 * 1024 * 1024; // 8MB
+    const MAX_DUAL_SIZE = 4.5 * 1024 * 1024; // 4.5MB
+    
+    if (uploadType === 'both') {
+      if (uploadFile.size > MAX_DUAL_SIZE) {
+        setErrorMsg("Each image must be smaller than 4.5MB for dual submissions. Please compress your design image.");
+        return;
+      }
+      if (uploadMemeFile && uploadMemeFile.size > MAX_DUAL_SIZE) {
+        setErrorMsg("Each image must be smaller than 4.5MB for dual submissions. Please compress your meme image.");
+        return;
+      }
+    } else {
+      if (uploadFile.size > MAX_SINGLE_SIZE) {
+        setErrorMsg("Image size must be smaller than 8MB. Please compress your image.");
+        return;
+      }
     }
 
     setLoading(true);
@@ -1622,6 +1672,13 @@ export default function App() {
                   
                   <div className="shrink-0 font-mono">
                     {(() => {
+                      if (activeTodayTopic.is_skipped || activeTodayTopic.title === "No Task Today") {
+                        return (
+                          <div className="border border-zinc-200 text-zinc-500 bg-zinc-50 text-[10px] font-bold rounded-md px-3 py-1.5 uppercase tracking-wide select-none">
+                            📭 Today is a Rest Day!
+                          </div>
+                        );
+                      }
                       const topicDayNum = activeTodayTopic.day;
                       const dayUpload = studentUploads.find(u => Number(u.day_number) === Number(topicDayNum));
                       const isSubmitted = !!dayUpload;
@@ -1742,9 +1799,12 @@ export default function App() {
                 {cycleDays.map((dayObj) => {
                   const state = submissionTracker[dayObj.day];
                   const dayUpload = studentUploads.find(u => u.day_number === dayObj.day);
+                  const topic = topics.find(t => t.day === dayObj.day);
                   
                   let tileStyle = "bg-white border border-zinc-200 hover:border-zinc-400 text-zinc-850 hover:bg-zinc-50/30";
-                  if (state === 'both') {
+                  if (topic && (topic.is_skipped || topic.title === "No Task Today")) {
+                    tileStyle = "bg-zinc-50 border border-zinc-150 text-zinc-450 cursor-not-allowed";
+                  } else if (state === 'both') {
                     tileStyle = "bg-green-100 border border-green-300 text-green-950 hover:border-green-500";
                   } else if (state === 'task' || state === 'meme') {
                     tileStyle = "bg-orange-100 border border-orange-300 text-orange-950 hover:border-orange-500";
@@ -1757,6 +1817,8 @@ export default function App() {
                         setSelectedDayNumber(dayObj.day);
                         if (dayUpload) {
                           setViewingSubmission(dayUpload);
+                        } else if (topic && (topic.is_skipped || topic.title === "No Task Today")) {
+                          alert("Today is a rest day! No submissions are allowed.");
                         } else {
                           setUploadTopic('');
                           setUploadType('task');
@@ -2119,6 +2181,17 @@ export default function App() {
                 }`}
               >
                 📅 Daily Tasks Plan
+              </button>
+              <button
+                type="button"
+                onClick={() => setCoordinatorTab('attendance')}
+                className={`py-3 px-6 font-mono text-xs uppercase tracking-wider font-bold border-b-2 transition-all cursor-pointer ${
+                  coordinatorTab === 'attendance'
+                    ? 'border-black text-black'
+                    : 'border-transparent text-zinc-400 hover:text-zinc-650'
+                }`}
+              >
+                🎟️ SAP Attendance
               </button>
             </div>
 
@@ -3752,6 +3825,432 @@ export default function App() {
         </div>
       )}
 
+      {coordinatorTab === 'attendance' && (
+        <div className="space-y-8 animate-fade-in">
+          {/* Header banner */}
+          <div className="premium-card p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-bold font-mono uppercase tracking-wider text-black">SAP Attendance Tracker</h3>
+              <p className="text-xs text-zinc-400 font-light mt-0.5">Manage session attendance for registered SAP Members. Normal students do not require attendance tracking.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setSessionName('');
+                setSessionType('meeting');
+                setSessionDate(new Date().toISOString().split('T')[0]);
+                setShowCreateSession(true);
+              }}
+              className="bg-black hover:bg-zinc-800 text-white text-xs font-mono font-bold uppercase py-2.5 px-4 rounded-lg flex items-center gap-1.5 cursor-pointer transition-all shrink-0 shadow-sm"
+            >
+              <Plus className="w-4 h-4" /> Create Session
+            </button>
+          </div>
+
+          {/* Attendance View: Checklist Drawer / Panel when editing, otherwise show Meeting/Workshop Lists */}
+          {selectedAttendanceSession ? (
+            <div className="premium-card p-6 border border-indigo-150 bg-indigo-50/10 animate-fade-in">
+              {/* Edit Header */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-200 pb-5 mb-6">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setSelectedAttendanceSession(null)}
+                    className="p-2 hover:bg-zinc-150 rounded-lg text-zinc-500 hover:text-black cursor-pointer transition-colors"
+                    title="Back to Sessions"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <div>
+                    <span className={`text-[8.5px] font-extrabold px-2 py-0.5 rounded-full font-mono uppercase ${
+                      selectedAttendanceSession.type === 'meeting' ? 'bg-indigo-105 text-indigo-700' : 'bg-amber-100 text-amber-800'
+                    }`}>
+                      {selectedAttendanceSession.type}
+                    </span>
+                    <h4 className="text-sm font-bold text-black uppercase font-mono mt-1">{selectedAttendanceSession.name}</h4>
+                    <p className="text-[10px] text-zinc-450 font-mono mt-0.5">
+                      Date: {new Date(selectedAttendanceSession.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                    </p>
+                  </div>
+                </div>
+                
+                {/* Quick toggle actions */}
+                <div className="flex items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sapMembers = adminStudents.filter(s => s.is_sap_member);
+                      setSelectedAttendanceSession({
+                        ...selectedAttendanceSession,
+                        present_students: sapMembers.map(s => String(s.id))
+                      });
+                    }}
+                    className="premium-btn-outline py-2 px-3 text-[9px] uppercase tracking-wider font-bold"
+                  >
+                    Mark All Present
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedAttendanceSession({
+                        ...selectedAttendanceSession,
+                        present_students: []
+                      });
+                    }}
+                    className="premium-btn-outline py-2 px-3 text-[9px] uppercase tracking-wider font-bold"
+                  >
+                    Mark All Absent
+                  </button>
+                </div>
+              </div>
+
+              {/* List of SAP Members */}
+              <div className="max-w-2xl mx-auto space-y-4">
+                <div className="flex items-center justify-between text-[10px] text-zinc-400 font-mono uppercase tracking-wider border-b border-zinc-150 pb-2">
+                  <span>Student Profile</span>
+                  <span>Attendance Status</span>
+                </div>
+                
+                <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+                  {adminStudents.filter(s => s.is_sap_member).map((student) => {
+                    const isPresent = selectedAttendanceSession.present_students.includes(String(student.id));
+                    return (
+                      <div 
+                        key={student.id} 
+                        onClick={() => {
+                          const currentPresent = [...selectedAttendanceSession.present_students];
+                          const sidStr = String(student.id);
+                          if (isPresent) {
+                            const idx = currentPresent.indexOf(sidStr);
+                            if (idx !== -1) currentPresent.splice(idx, 1);
+                          } else {
+                            currentPresent.push(sidStr);
+                          }
+                          setSelectedAttendanceSession({
+                            ...selectedAttendanceSession,
+                            present_students: currentPresent
+                          });
+                        }}
+                        className={`flex items-center justify-between p-3.5 border rounded-xl cursor-pointer select-none transition-all ${
+                          isPresent 
+                            ? 'border-green-300 bg-green-50/20 hover:bg-green-50/40' 
+                            : 'border-zinc-200 bg-white hover:bg-zinc-50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-full bg-zinc-100 border border-zinc-200 flex items-center justify-center font-mono font-bold text-black text-xs uppercase shrink-0">
+                            {student.name.substring(0, 2)}
+                          </div>
+                          <div>
+                            <span className="block text-xs font-bold text-black uppercase font-mono">{student.name}</span>
+                            <span className="block text-[9px] text-zinc-450 uppercase font-mono mt-0.5">{student.email} • {student.college_name}</span>
+                          </div>
+                        </div>
+                        
+                        <div>
+                          {isPresent ? (
+                            <span className="flex items-center gap-1 bg-green-100 text-green-800 text-[9px] font-bold font-mono px-2.5 py-1 rounded-full uppercase tracking-wider">
+                              <Check className="w-3.5 h-3.5" /> Present
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1 bg-zinc-100 text-zinc-500 text-[9px] font-bold font-mono px-2.5 py-1 rounded-full uppercase tracking-wider">
+                              <X className="w-3.5 h-3.5" /> Absent
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  
+                  {adminStudents.filter(s => s.is_sap_member).length === 0 && (
+                    <div className="text-center py-10 text-zinc-450 font-mono text-xs">
+                      No registered SAP students found in this cycle.
+                    </div>
+                  )}
+                </div>
+
+                {/* Actions */}
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-zinc-200 pt-6 mt-6">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (window.confirm("Are you sure you want to delete this session? This action is permanent.")) {
+                        try {
+                          const res = await api.deleteAttendanceSession(selectedAttendanceSession._id);
+                          if (res.error) {
+                            alert(res.error);
+                          } else {
+                            setSelectedAttendanceSession(null);
+                            await loadAttendanceData(selectedCycle);
+                          }
+                        } catch (err) {
+                          alert("Failed to delete session.");
+                        }
+                      }
+                    }}
+                    className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 text-xs font-mono font-bold uppercase py-2.5 px-4 rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors w-full sm:w-auto justify-center"
+                  >
+                    <Trash2 className="w-4 h-4" /> Delete Session
+                  </button>
+                  
+                  <div className="flex items-center gap-3 w-full sm:w-auto">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedAttendanceSession(null)}
+                      className="premium-btn-outline w-full sm:w-28 py-2.5 text-xs font-mono font-bold uppercase"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={savingAttendance}
+                      onClick={async () => {
+                        setSavingAttendance(true);
+                        try {
+                          const res = await api.updateAttendance(
+                            selectedAttendanceSession._id, 
+                            selectedAttendanceSession.present_students
+                          );
+                          if (res.error) {
+                            alert(res.error);
+                          } else {
+                            setSelectedAttendanceSession(null);
+                            await loadAttendanceData(selectedCycle);
+                          }
+                        } catch (err) {
+                          alert("Failed to save attendance.");
+                        } finally {
+                          setSavingAttendance(false);
+                        }
+                      }}
+                      className="premium-btn-black w-full sm:w-40 py-2.5 text-xs font-mono font-bold uppercase"
+                    >
+                      {savingAttendance ? "Saving..." : "Save Attendance"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              
+              {/* COLUMN 1: MEETINGS */}
+              <div className="premium-card p-6">
+                <div className="flex items-center gap-2 mb-6 border-b border-zinc-200 pb-3">
+                  <span className="text-lg">📅</span>
+                  <div>
+                    <h4 className="text-sm font-bold text-black uppercase font-mono">Meetings</h4>
+                    <p className="text-[10px] text-zinc-400 font-mono mt-0.5">Cycle Alignment & Discussions</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4 max-h-[480px] overflow-y-auto pr-1">
+                  {attendanceSessions.filter(s => s.type === 'meeting').map((session) => {
+                    const presentCount = session.present_students?.length || 0;
+                    const totalSap = adminStudents.filter(s => s.is_sap_member).length;
+                    const pct = totalSap > 0 ? Math.round((presentCount / totalSap) * 100) : 0;
+                    
+                    return (
+                      <div 
+                        key={session._id}
+                        className="border border-zinc-200 hover:border-zinc-300 bg-zinc-50/50 hover:bg-zinc-50 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-all"
+                      >
+                        <div>
+                          <span className="text-[9px] font-mono text-zinc-450 block">
+                            {new Date(session.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                          </span>
+                          <h5 className="text-xs font-bold text-black uppercase font-mono mt-1">{session.name}</h5>
+                          <span className="text-[10px] font-mono text-zinc-500 mt-2 block">
+                            Attendance Rate: <strong className="text-black">{pct}%</strong> ({presentCount} / {totalSap} present)
+                          </span>
+                        </div>
+                        
+                        <button
+                          type="button"
+                          onClick={() => setSelectedAttendanceSession(session)}
+                          className="bg-black hover:bg-zinc-800 text-white text-[10px] font-bold font-mono uppercase tracking-wider py-2 px-3.5 rounded-lg text-center cursor-pointer transition-colors w-full sm:w-auto"
+                        >
+                          Mark Attendance
+                        </button>
+                      </div>
+                    );
+                  })}
+
+                  {attendanceSessions.filter(s => s.type === 'meeting').length === 0 && (
+                    <div className="text-center py-12 text-zinc-400 font-mono text-xs border border-dashed border-zinc-200 rounded-2xl">
+                      No meeting sessions created yet in this cycle.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* COLUMN 2: WORKSHOPS */}
+              <div className="premium-card p-6">
+                <div className="flex items-center gap-2 mb-6 border-b border-zinc-200 pb-3">
+                  <span className="text-lg">🎨</span>
+                  <div>
+                    <h4 className="text-sm font-bold text-black uppercase font-mono">Workshops</h4>
+                    <p className="text-[10px] text-zinc-400 font-mono mt-0.5">Practical Skill & Design Sprints</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4 max-h-[480px] overflow-y-auto pr-1">
+                  {attendanceSessions.filter(s => s.type === 'workshop').map((session) => {
+                    const presentCount = session.present_students?.length || 0;
+                    const totalSap = adminStudents.filter(s => s.is_sap_member).length;
+                    const pct = totalSap > 0 ? Math.round((presentCount / totalSap) * 100) : 0;
+                    
+                    return (
+                      <div 
+                        key={session._id}
+                        className="border border-zinc-200 hover:border-zinc-300 bg-zinc-50/50 hover:bg-zinc-50 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-all"
+                      >
+                        <div>
+                          <span className="text-[9px] font-mono text-zinc-450 block">
+                            {new Date(session.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                          </span>
+                          <h5 className="text-xs font-bold text-black uppercase font-mono mt-1">{session.name}</h5>
+                          <span className="text-[10px] font-mono text-zinc-500 mt-2 block">
+                            Attendance Rate: <strong className="text-black">{pct}%</strong> ({presentCount} / {totalSap} present)
+                          </span>
+                        </div>
+                        
+                        <button
+                          type="button"
+                          onClick={() => setSelectedAttendanceSession(session)}
+                          className="bg-black hover:bg-zinc-800 text-white text-[10px] font-bold font-mono uppercase tracking-wider py-2 px-3.5 rounded-lg text-center cursor-pointer transition-colors w-full sm:w-auto"
+                        >
+                          Mark Attendance
+                        </button>
+                      </div>
+                    );
+                  })}
+
+                  {attendanceSessions.filter(s => s.type === 'workshop').length === 0 && (
+                    <div className="text-center py-12 text-zinc-400 font-mono text-xs border border-dashed border-zinc-200 rounded-2xl">
+                      No workshop sessions created yet in this cycle.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+            </div>
+          )}
+
+          {/* CREATE SESSION MODAL */}
+          {showCreateSession && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
+              <div className="bg-white border border-zinc-200 p-6 rounded-2xl w-full max-w-sm shadow-2xl animate-scale-up">
+                <div className="flex justify-between items-start border-b border-zinc-200 pb-3 mb-4">
+                  <div>
+                    <h4 className="text-sm font-bold font-mono text-black uppercase tracking-wider">Create Attendance Session</h4>
+                    <p className="text-[10px] text-zinc-400 font-mono mt-0.5">Add a new meeting or workshop tracker</p>
+                  </div>
+                  <button 
+                    onClick={() => setShowCreateSession(false)}
+                    className="text-zinc-450 hover:text-black font-mono text-xs border border-zinc-200 hover:border-zinc-350 px-2 py-0.5 rounded cursor-pointer transition-colors"
+                  >
+                    [x]
+                  </button>
+                </div>
+
+                <form 
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (!sessionName.trim()) return;
+                    try {
+                      const payload = {
+                        cycle_id: selectedCycle,
+                        type: sessionType,
+                        name: sessionName.trim(),
+                        date: sessionDate
+                      };
+                      const res = await api.createAttendanceSession(payload);
+                      if (res.error) {
+                        alert(res.error);
+                      } else {
+                        setShowCreateSession(false);
+                        setSessionName('');
+                        await loadAttendanceData(selectedCycle);
+                      }
+                    } catch (err) {
+                      alert("Failed to create session.");
+                    }
+                  }} 
+                  className="space-y-4 font-mono text-xs"
+                >
+                  <div>
+                    <label className="block text-[9.5px] text-zinc-450 font-bold uppercase tracking-wider mb-1.5">Session Type</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSessionType('meeting')}
+                        className={`py-2 px-3 border font-mono font-bold text-center rounded-lg uppercase tracking-wider cursor-pointer transition-all ${
+                          sessionType === 'meeting' 
+                            ? 'bg-black border-black text-white' 
+                            : 'bg-zinc-50 border-zinc-200 text-zinc-500 hover:border-zinc-350'
+                        }`}
+                      >
+                        Meeting
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSessionType('workshop')}
+                        className={`py-2 px-3 border font-mono font-bold text-center rounded-lg uppercase tracking-wider cursor-pointer transition-all ${
+                          sessionType === 'workshop' 
+                            ? 'bg-black border-black text-white' 
+                            : 'bg-zinc-50 border-zinc-200 text-zinc-500 hover:border-zinc-350'
+                        }`}
+                      >
+                        Workshop
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[9.5px] text-zinc-450 font-bold uppercase tracking-wider mb-1.5">Session Name</label>
+                    <input 
+                      type="text" 
+                      value={sessionName} 
+                      onChange={(e) => setSessionName(e.target.value)}
+                      placeholder="e.g. Session 1: Intro to UI"
+                      className="w-full premium-input font-sans text-xs"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[9.5px] text-zinc-450 font-bold uppercase tracking-wider mb-1.5">Session Date</label>
+                    <input 
+                      type="date" 
+                      value={sessionDate} 
+                      onChange={(e) => setSessionDate(e.target.value)}
+                      className="w-full premium-input font-sans font-bold text-xs"
+                      required
+                    />
+                  </div>
+
+                  <div className="flex gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateSession(false)}
+                      className="premium-btn-outline w-1/2 py-2.5 text-xs font-mono font-bold uppercase"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="premium-btn-black w-1/2 py-2.5 text-xs font-mono font-bold uppercase"
+                    >
+                      Create
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 5. NEW DAILY TASK ANNOUNCEMENT POPUP */}
       {showTaskPopup && activeTodayTopic && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md animate-fade-in">
@@ -3765,7 +4264,8 @@ export default function App() {
             </div>
             
             <h2 className="text-lg font-black tracking-tight text-indigo-950 uppercase mt-5 font-mono">
-              {popupType === 'new' ? '📢 New Daily Task Added!' : 
+              {activeTodayTopic.is_skipped || activeTodayTopic.title === "No Task Today" ? '📭 Today is a Rest Day!' :
+               popupType === 'new' ? '📢 New Daily Task Added!' : 
                popupType === 'missed_previous' ? '⚠️ Previous Task Missed!' : 
                '🔄 Daily Task Updated by Admin!'}
             </h2>
@@ -3773,7 +4273,14 @@ export default function App() {
               {activeTodayTopic.date ? new Date(activeTodayTopic.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric' }) : ''} • Day {activeTodayTopic.day}
             </p>
             
-            {popupType === 'new' ? (
+            {activeTodayTopic.is_skipped || activeTodayTopic.title === "No Task Today" ? (
+              <div className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-5 my-6">
+                <h4 className="text-xs font-bold text-amber-600 font-mono uppercase">☕ No Task Announced Today</h4>
+                <p className="text-[11px] text-zinc-550 mt-2 font-mono leading-relaxed text-center bg-white p-4 rounded-lg border border-zinc-100 whitespace-pre-line">
+                  {activeTodayTopic.desc || "Today you don't have any task, come back tomorrow."}
+                </p>
+              </div>
+            ) : popupType === 'new' ? (
               <div className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-5 my-6">
                 <h4 className="text-xs font-bold text-black font-mono uppercase">{activeTodayTopic.title}</h4>
                 <p className="text-[11px] text-zinc-550 mt-2 font-mono leading-relaxed text-left whitespace-pre-line bg-white p-3 rounded-lg border border-zinc-100 max-h-[140px] overflow-y-auto">
@@ -3838,7 +4345,8 @@ export default function App() {
               }}
               className="w-full py-3 bg-black hover:bg-zinc-800 text-white rounded-xl text-xs uppercase tracking-wider font-mono font-bold transition-all shadow-md active:scale-98 cursor-pointer"
             >
-              {popupType === 'new' ? 'Start Designing Task! [x]' : 
+              {activeTodayTopic.is_skipped || activeTodayTopic.title === "No Task Today" ? 'Okay, Got It! [x]' :
+               popupType === 'new' ? 'Start Designing Task! [x]' : 
                popupType === 'missed_previous' ? 'Acknowledge & Start New Task [x]' : 
                'Accept Updates & Close [x]'}
             </button>
@@ -3907,6 +4415,42 @@ export default function App() {
                 className="w-full premium-btn-black py-2.5 text-xs uppercase"
               >
                 {loading ? "Announcing Task..." : "Submit Task & Announce"}
+              </button>
+              
+              <button
+                type="button"
+                disabled={loading}
+                onClick={async () => {
+                  if (window.confirm(`Are you sure you want to skip Day ${editingTopic.day}? Students will see a popup stating there is no task for today.`)) {
+                    setErrorMsg('');
+                    setSuccessMsg('');
+                    setLoading(true);
+                    try {
+                      const res = await api.addTopic({
+                        cycle_id: selectedCycle,
+                        date: editedTopicDate,
+                        day: editingTopic.day,
+                        title: "No Task Today",
+                        desc: "Today you don't have any task, come back tomorrow.",
+                        is_skipped: true
+                      });
+                      if (res.error) {
+                        setErrorMsg(res.error);
+                      } else {
+                        setSuccessMsg(`Day ${editingTopic.day} set as a rest day!`);
+                        setEditingTopic(null);
+                        loadDashboardData();
+                      }
+                    } catch (err) {
+                      setErrorMsg("Failed to skip day.");
+                    } finally {
+                      setLoading(false);
+                    }
+                  }
+                }}
+                className="w-full py-2.5 mt-2 bg-amber-500 hover:bg-amber-600 text-black rounded-lg text-xs uppercase font-mono font-bold transition-all cursor-pointer shadow-xs flex items-center justify-center gap-1.5"
+              >
+                <span>📭</span> Skip Day / No Task Today
               </button>
             </form>
           </div>

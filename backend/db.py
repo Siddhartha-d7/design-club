@@ -125,6 +125,25 @@ class JSONCollection:
                 self.matched_count = matched_count
         return UpdateResult(matched)
 
+    def delete_one(self, query):
+        items = self._get_items()
+        for idx, item in enumerate(items):
+            match = True
+            for k, v in query.items():
+                val = item.get(k)
+                if isinstance(v, ObjectId):
+                    v = str(v)
+                if isinstance(val, ObjectId):
+                    val = str(val)
+                if str(val) != str(v):
+                    match = False
+                    break
+            if match:
+                items.pop(idx)
+                self._set_items(items)
+                return True
+        return False
+
     def count_documents(self, query):
         items = self._get_items()
         count = 0
@@ -231,6 +250,7 @@ users_col = None
 uploads_col = None
 topics_col = None
 polls_col = None
+attendance_col = None
 
 # 1. Try MongoDB Atlas connection
 try:
@@ -246,10 +266,16 @@ try:
     uploads_col = db.get_collection("uploads")
     topics_col = db.get_collection("topics")
     polls_col = db.get_collection("polls")
+    attendance_col = db.get_collection("attendance")
     db_mode = "MONGODB_ATLAS"
     print("Successfully connected to MongoDB Atlas!")
 except Exception as atlas_err:
-    print(f"MongoDB Atlas connection failed: {atlas_err}")
+    print("\n" + "!" * 60)
+    print(" WARNING: MONGODB ATLAS CONNECTION FAILED!")
+    print(f" Error: {atlas_err}")
+    print(" The server will attempt to fall back to Local MongoDB.")
+    print(" Please verify your internet connection, credentials, or IP Whitelist in Atlas!")
+    print("!" * 60 + "\n")
     
     # 2. Try Local MongoDB Connection
     try:
@@ -262,19 +288,24 @@ except Exception as atlas_err:
         uploads_col = db.get_collection("uploads")
         topics_col = db.get_collection("topics")
         polls_col = db.get_collection("polls")
+        attendance_col = db.get_collection("attendance")
         db_mode = "MONGODB_LOCAL"
         print("Successfully connected to Local MongoDB!")
     except Exception as local_err:
-        print(f"Local MongoDB connection failed: {local_err}")
+        print("\n" + "!" * 60)
+        print(" WARNING: LOCAL MONGODB CONNECTION FAILED!")
+        print(f" Error: {local_err}")
+        print(" Falling back to Local JSON database (db_fallback.json)...")
+        print("!" * 60 + "\n")
         
         # 3. Fallback to Local JSON DB
         db_mode = "JSON_FALLBACK"
-        print("FALLBACK: Initializing resilient JSON database (db_fallback.json)...")
         db_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db_fallback.json')
         users_col = JSONCollection(db_file, "users")
         uploads_col = JSONCollection(db_file, "uploads")
         topics_col = JSONCollection(db_file, "topics")
         polls_col = JSONCollection(db_file, "polls")
+        attendance_col = JSONCollection(db_file, "attendance")
 
 def init_db():
     """

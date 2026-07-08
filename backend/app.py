@@ -10,7 +10,7 @@ from bson import ObjectId
 from datetime import datetime, timedelta
 
 from config import Config
-from db import init_db, users_col, uploads_col, topics_col, polls_col, db_mode
+from db import init_db, users_col, uploads_col, topics_col, polls_col, attendance_col, db_mode
 from auth import generate_token, token_required
 
 app = Flask(__name__)
@@ -378,6 +378,7 @@ def update_topic(current_user, day_number):
     desc = data.get('desc')
     announced = data.get('announced', True)
     cycle_id = data.get('cycle_id')
+    is_skipped = data.get('is_skipped', False)
     
     if not title or not desc:
         return jsonify({'error': 'Title and description are required!'}), 400
@@ -399,7 +400,8 @@ def update_topic(current_user, day_number):
         "title": title,
         "desc": desc,
         "announced": announced,
-        "is_updated": is_updated
+        "is_updated": is_updated,
+        "is_skipped": is_skipped
     }
     if is_updated:
         update_fields["prev_title"] = prev_title
@@ -429,6 +431,7 @@ def add_topic(current_user):
     title = data.get('title')
     desc = data.get('desc')
     cycle_id = data.get('cycle_id')
+    is_skipped = data.get('is_skipped', False)
     
     if not date_str or not title or not desc or not cycle_id:
         return jsonify({'error': 'Date, title, description, and cycle_id are required!'}), 400
@@ -459,7 +462,8 @@ def add_topic(current_user):
         "desc": desc,
         "announced": True,
         "announced_at": datetime.utcnow(),
-        "is_updated": is_updated
+        "is_updated": is_updated,
+        "is_skipped": is_skipped
     }
     if is_updated:
         update_fields["prev_title"] = prev_title
@@ -605,21 +609,22 @@ def student_upload_profile_pic(current_user):
     if ext not in ['jpg', 'jpeg', 'png', 'gif', 'webp']:
         return jsonify({'error': 'Only JPG, JPEG, PNG, GIF, and WEBP images are allowed!'}), 400
         
-    from werkzeug.utils import secure_filename
-    timestamp = int(datetime.utcnow().timestamp())
-    safe_name = f"profile_pic_{current_user['_id']}_{timestamp}.{ext}"
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], safe_name)
-    file.save(file_path)
+    # Convert to base64 for database storage to support shared DB serving without disk storage
+    import base64
+    file_data = file.read()
+    base64_data = base64.b64encode(file_data).decode('utf-8')
+    mime_type = file.mimetype or f"image/{ext}"
+    db_profile_pic = f"data:{mime_type};base64,{base64_data}"
     
     from bson import ObjectId
     users_col.update_one(
         {"_id": ObjectId(current_user['_id'])},
-        {"$set": {"profile_pic": safe_name}}
+        {"$set": {"profile_pic": db_profile_pic}}
     )
     
     return jsonify({
         'message': 'Profile picture uploaded successfully!',
-        'profile_pic': safe_name
+        'profile_pic': db_profile_pic
     }), 200
 
 @app.route('/api/student/upload', methods=['POST'])
@@ -652,8 +657,11 @@ def student_upload(current_user):
         "cycle_id": cycle_id,
         "day_number": day_number
     })
+    is_update = False
     if existing:
-        return jsonify({'error': f'You have already submitted an entry for Day {day_number} in this cycle!'}), 400
+        if existing.get('status') == 'reviewed':
+            return jsonify({'error': f'Your submission for Day {day_number} has already been reviewed and cannot be modified!'}), 400
+        is_update = True
         
     # Validate primary file
     if 'image' not in request.files:
@@ -666,13 +674,22 @@ def student_upload(current_user):
     if not allowed_file(file.filename):
         return jsonify({'error': 'Invalid design image type. Allowed types: PNG, JPG, JPEG, GIF, WEBP.'}), 400
         
-    # Save design image
+    # Check primary file size (8MB max for single, 4.5MB max for both)
+    file.seek(0, os.SEEK_END)
+    file_size = file.tell()
+    file.seek(0)
+    max_size = 4.5 * 1024 * 1024 if submission_type == 'both' else 8 * 1024 * 1024
+    if file_size > max_size:
+        return jsonify({'error': f"Design image size exceeds limit of {max_size / (1024*1024)}MB. Please compress your image."}), 400
+        
+    import base64
     ext = file.filename.rsplit('.', 1)[1].lower()
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    safe_name = f"{current_user['_id']}_cycle_{cycle_id}_day{day_number}_{timestamp}.{ext}"
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], safe_name)
-    file.save(file_path)
-    image_url = f"/uploads/{safe_name}"
+    
+    # Convert file data to Base64 data URL for database storage
+    file_data = file.read()
+    base64_data = base64.b64encode(file_data).decode('utf-8')
+    mime_type = file.mimetype or f"image/{ext}"
+    image_url = f"data:{mime_type};base64,{base64_data}"
     
     # Save meme image if submission type is both
     image_meme_url = None
@@ -685,11 +702,21 @@ def student_upload(current_user):
         if not allowed_file(file_meme.filename):
             return jsonify({'error': 'Invalid meme image type. Allowed types: PNG, JPG, JPEG, GIF, WEBP.'}), 400
             
+        # Check meme file size (4.5MB max)
+        file_meme.seek(0, os.SEEK_END)
+        file_meme_size = file_meme.tell()
+        file_meme.seek(0)
+        max_meme_size = 4.5 * 1024 * 1024
+        if file_meme_size > max_meme_size:
+            return jsonify({'error': f"Meme image size exceeds limit of {max_meme_size / (1024*1024)}MB. Please compress your image."}), 400
+            
         ext_meme = file_meme.filename.rsplit('.', 1)[1].lower()
-        safe_name_meme = f"{current_user['_id']}_cycle_{cycle_id}_day{day_number}_meme_{timestamp}.{ext_meme}"
-        file_path_meme = os.path.join(app.config['UPLOAD_FOLDER'], safe_name_meme)
-        file_meme.save(file_path_meme)
-        image_meme_url = f"/uploads/{safe_name_meme}"
+        
+        # Convert meme file data to Base64 data URL for database storage
+        file_meme_data = file_meme.read()
+        base64_meme_data = base64.b64encode(file_meme_data).decode('utf-8')
+        mime_type_meme = file_meme.mimetype or f"image/{ext_meme}"
+        image_meme_url = f"data:{mime_type_meme};base64,{base64_meme_data}"
 
     # Calculate date based on cycle_id + day_number (1-indexed)
     topic_date = start_date + timedelta(days=day_number - 1)
@@ -741,7 +768,10 @@ def student_upload(current_user):
         }
     }
     
-    uploads_col.insert_one(upload_doc)
+    if is_update:
+        uploads_col.update_one({"_id": existing["_id"]}, {"$set": upload_doc})
+    else:
+        uploads_col.insert_one(upload_doc)
     
     # Recalculate total student points for this cycle
     new_total = recalculate_student_points(current_user['_id'], cycle_id)
@@ -815,6 +845,92 @@ def admin_get_uploads(current_user):
         u['student_id'] = str(u['student_id'])
         u['is_sap_member'] = student_sap_map.get(u['student_id'], False)
     return jsonify(uploads), 200
+
+@app.route('/api/admin/attendance', methods=['GET'])
+@token_required
+def admin_get_attendance(current_user):
+    if current_user['role'] != 'leader':
+        return jsonify({'error': 'Unauthorized! Team Leads only.'}), 403
+        
+    cycle_id = request.args.get('cycle')
+    if not cycle_id:
+        cycle_id = get_default_cycle()
+        
+    sessions = list(attendance_col.find({"cycle_id": cycle_id}))
+    for s in sessions:
+        s['_id'] = str(s['_id'])
+    return jsonify(sessions), 200
+
+@app.route('/api/admin/attendance', methods=['POST'])
+@token_required
+def admin_create_attendance_session(current_user):
+    if current_user['role'] != 'leader':
+        return jsonify({'error': 'Unauthorized! Team Leads only.'}), 403
+        
+    data = request.get_json() or {}
+    cycle_id = data.get('cycle_id')
+    session_type = data.get('type') # 'meeting' or 'workshop'
+    name = data.get('name')
+    date_str = data.get('date') # YYYY-MM-DD
+    
+    if not cycle_id or not session_type or not name or not date_str:
+        return jsonify({'error': 'cycle_id, type, name, and date are required.'}), 400
+        
+    if session_type not in ['meeting', 'workshop']:
+        return jsonify({'error': 'Type must be "meeting" or "workshop".'}), 400
+        
+    new_session = {
+        "cycle_id": cycle_id,
+        "type": session_type,
+        "name": name,
+        "date": date_str,
+        "present_students": []
+    }
+    
+    result = attendance_col.insert_one(new_session)
+    inserted_id = str(result.inserted_id) if hasattr(result, 'inserted_id') else str(result)
+    
+    return jsonify({
+        'message': 'Attendance session created successfully!',
+        'session_id': inserted_id
+    }), 201
+
+@app.route('/api/admin/attendance/<session_id>', methods=['PUT'])
+@token_required
+def admin_update_attendance(current_user, session_id):
+    if current_user['role'] != 'leader':
+        return jsonify({'error': 'Unauthorized! Team Leads only.'}), 403
+        
+    data = request.get_json() or {}
+    present_students = data.get('present_students')
+    if present_students is None or not isinstance(present_students, list):
+        return jsonify({'error': 'present_students must be a list.'}), 400
+        
+    present_students = [str(sid) for sid in present_students]
+    
+    try:
+        query = {"_id": ObjectId(session_id)}
+    except Exception:
+        query = {"_id": session_id}
+        
+    attendance_col.update_one(query, {"$set": {"present_students": present_students}})
+    
+    return jsonify({'message': 'Attendance updated successfully!'}), 200
+
+@app.route('/api/admin/attendance/<session_id>', methods=['DELETE'])
+@token_required
+def admin_delete_attendance_session(current_user, session_id):
+    if current_user['role'] != 'leader':
+        return jsonify({'error': 'Unauthorized! Team Leads only.'}), 403
+        
+    try:
+        query = {"_id": ObjectId(session_id)}
+    except Exception:
+        query = {"_id": session_id}
+        
+    attendance_col.delete_one(query)
+    return jsonify({'message': 'Attendance session deleted successfully!'}), 200
+
 
 # Helper to parse dates dynamically from ISO-8601 strings or Python datetime objects
 def parse_date(date_val):
@@ -1737,6 +1853,47 @@ def admin_end_poll(current_user, poll_id):
 
 @app.route('/uploads/<path:filename>')
 def serve_uploads(filename):
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    if not os.path.exists(file_path):
+        from flask import Response
+        is_profile = filename.startswith("profile_pic_")
+        is_meme = "meme" in filename.lower()
+        if is_profile:
+            label = "Profile Picture"
+            svg_content = f'''<svg xmlns="http://www.w3.org/2000/svg" width="150" height="150" viewBox="0 0 150 150">
+                <rect width="100%" height="100%" fill="#27272a"/>
+                <circle cx="75" cy="55" r="25" fill="#71717a"/>
+                <path d="M35 115 C35 90, 115 90, 115 115" fill="#71717a"/>
+                <text x="50%" y="140" font-family="sans-serif" font-size="9" fill="#a1a1aa" text-anchor="middle">
+                    Missing Profile Pic
+                </text>
+            </svg>'''
+        else:
+            label = "Meme Graphic" if is_meme else "Design Submission"
+            svg_content = f'''<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+                <rect width="100%" height="100%" fill="#18181b"/>
+                <defs>
+                    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
+                        <stop offset="100%" style="stop-color:#ec4899;stop-opacity:1" />
+                    </linearGradient>
+                </defs>
+                <circle cx="400" cy="250" r="70" fill="url(#grad)" opacity="0.15"/>
+                <text x="50%" y="260" font-family="sans-serif" font-size="48" font-weight="bold" fill="url(#grad)" text-anchor="middle">
+                    🖼️
+                </text>
+                <text x="50%" y="360" font-family="'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="28" font-weight="bold" fill="#f4f4f5" text-anchor="middle">
+                    {label}
+                </text>
+                <text x="50%" y="410" font-family="'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="16" fill="#a1a1aa" text-anchor="middle">
+                    File: {filename}
+                </text>
+                <text x="50%" y="440" font-family="'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" fill="#52525b" text-anchor="middle" font-style="italic">
+                    (Physical file missing on local server)
+                </text>
+            </svg>'''
+        return Response(svg_content, mimetype='image/svg+xml')
+        
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 # Run initialization
